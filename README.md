@@ -9,6 +9,12 @@
 - 数据库：SQLite 3（单文件，零部署）
 - 认证：JWT（前后端分离）
 
+## 系统架构
+
+![PartKeeper 运行时架构](docs/partkeeper-architecture.png)
+
+> 矢量源文件见 [docs/partkeeper.svg](docs/partkeeper.svg)。
+
 ## 目录结构
 
 ```
@@ -22,7 +28,10 @@ PartKeeper/
 │   ├── utils/          # 工具（JWT、密码、装饰器）
 │   └── .env.example    # 环境变量示例
 ├── frontend/           # Vue 3 前端
-└── 物料管理系统开发规划.md
+└── docs/               # 文档与架构图
+    ├── 物料管理系统开发规划.md   # 设计方案与实现说明
+    ├── 使用说明.md              # 使用说明
+    └── partkeeper.svg / partkeeper-architecture.png   # 运行时架构图
 ```
 
 ## 快速开始
@@ -68,7 +77,7 @@ npm run dev
 
 > 以上为本地开发默认值，可通过 `backend/.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 修改；生产或正式使用前请务必更换 `SECRET_KEY` 和管理员密码。`.env` 已被 `.gitignore` 排除，不会提交到仓库。
 
-更详细的功能使用说明见 [使用说明.md](使用说明.md)。
+更详细的功能使用说明见 [使用说明.md](docs/使用说明.md)。
 
 ## 主要功能
 
@@ -93,4 +102,4 @@ npm run dev
 }
 ```
 
-主要接口前缀为 `/api`，详见 [物料管理系统开发规划.md](物料管理系统开发规划.md) 第 6 节。
+主要接口前缀为 `/api`，详见 [物料管理系统开发规划.md](docs/物料管理系统开发规划.md) 第 6 节。
