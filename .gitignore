@@ -14,3 +14,6 @@ backend/.env
 # Node
 node_modules/
 frontend/dist/
+
+# 本地工作记忆（不含业务代码）
+.workbuddy/

@@ -103,3 +103,54 @@ npm run dev
 ```
 
 主要接口前缀为 `/api`，详见 [物料管理系统开发规划.md](docs/物料管理系统开发规划.md) 第 6 节。
+
+## MCP 对外通信（供 WorkBuddy 连接器访问）
+
+PartKeeper 提供独立的 MCP Server（Streamable HTTP + Bearer 认证），与 Web Server 共享同一 SQLite 数据库，供 WorkBuddy 自定义连接器调用物料查询、统计与出入库能力。
+
+### 启动
+
+```powershell
+# 单独启动 MCP Server（默认 0.0.0.0:8000，端点 /mcp）
+powershell -ExecutionPolicy Bypass -File .\start_mcp.ps1
+
+# 或使用一键脚本（会同时拉起前端、后端与 MCP Server）
+powershell -ExecutionPolicy Bypass -File .\start.ps1
+```
+
+### 认证
+
+所有请求需在 Header 携带 `Authorization: Bearer <MCP_API_KEY>`。密钥来自 `backend/.env` 的 `MCP_API_KEY`；留空时仅接受用 `SECRET_KEY` 签发、`role=admin` 的 JWT。未携带或无效 token 返回 `401`。
+
+### 可用工具（14 个）
+
+| 工具 | 说明 |
+|------|------|
+| `list_components` | 物料列表，支持关键词/分类/低库存过滤 |
+| `get_component` | 按 ID 查物料详情 |
+| `create_component` | 新建物料档案，分类/库位/供应商按名称自动关联 |
+| `list_low_stock` | 低库存预警清单 |
+| `list_categories` | 分类树 |
+| `list_suppliers` / `list_locations` | 供应商 / 库位 |
+| `list_transactions` | 库存流水（按类型、日期过滤） |
+| `get_stats_overview` | 库存与采购/消耗总览 |
+| `get_purchase_ranking` / `get_consumption_ranking` | 采购 / 消耗排行 |
+| `get_monthly_trend` | 月度趋势 |
+| `stock_in` / `stock_out` | 入库 / 出库（记录操作人为 `MCP_OPERATOR_ID`） |
+
+### WorkBuddy 接入
+
+在 `~/.workbuddy/mcp.json` 的 `mcpServers` 中增加：
+
+```json
+"partkeeper": {
+  "type": "streamableHttp",
+  "url": "http://127.0.0.1:8000/mcp",
+  "headers": {
+    "Authorization": "Bearer <MCP_API_KEY>"
+  },
+  "timeout": 60000
+}
+```
+
+修改 `mcp.json` 后需重启 WorkBuddy 会话使其生效。若更换了 `MCP_API_KEY`，须同步更新此处的 token。

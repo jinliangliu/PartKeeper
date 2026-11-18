@@ -3,3 +3,12 @@ Flask-SQLAlchemy==3.1.1
 Flask-CORS==4.0.0
 PyJWT==2.8.0
 python-dotenv==1.0.0
+
+# MCP 对外通信（Streamable HTTP）
+# 注意：pydantic 必须锁在 2.11.x —— 2.14 移除了 mcp 依赖的内部 API（eval_type_backport）
+mcp>=1.9.0
+uvicorn>=0.30.0
+starlette>=0.37.0
+pydantic==2.11.7
+pydantic-settings==2.10.1
+eval_type_backport>=0.2.0
