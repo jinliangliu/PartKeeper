@@ -72,13 +72,39 @@ def create_app(config_object=Config):
 
 
 def migrate():
-    """轻量迁移：为已存在的 transactions 表补充新增字段，避免重建库丢失数据。"""
+    """轻量迁移：为已存在的表补充新增字段，避免重建库丢失数据。
+
+    create_all() 只会建缺失的表，不会给已有表加列；这里用 ALTER TABLE 补齐。
+    每列都先检查是否已存在，保证重复启动幂等。
+    """
     inspector = inspect(db.engine)
-    if 'transactions' in inspector.get_table_names():
-        columns = [c['name'] for c in inspector.get_columns('transactions')]
-        if 'unit_price' not in columns:
-            db.session.execute(text('ALTER TABLE transactions ADD COLUMN unit_price FLOAT'))
-            db.session.commit()
+    tables = set(inspector.get_table_names())
+
+    # 列定义：表名 -> [(列名, SQLite 列类型与默认值), ...]
+    additions = {
+        'transactions': [
+            ('unit_price', 'FLOAT'),
+        ],
+        'components': [
+            ('is_consumable', 'BOOLEAN DEFAULT 0'),
+            ('consumption_rate', 'FLOAT'),
+            ('warranty_expiry', 'DATE'),
+            ('maintenance_cycle_days', 'INTEGER'),
+            ('last_maintenance_date', 'DATE'),
+        ],
+        'utility_bills': [
+            ('channel', "VARCHAR(20) DEFAULT 'other'"),
+        ],
+    }
+
+    for table, columns in additions.items():
+        if table not in tables:
+            continue
+        existing = {c['name'] for c in inspector.get_columns(table)}
+        for name, definition in columns:
+            if name not in existing:
+                db.session.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {definition}'))
+                db.session.commit()
 
 
 def register_error_handlers(app):
@@ -89,6 +115,15 @@ def register_error_handlers(app):
     @app.errorhandler(405)
     def method_not_allowed(e):
         return jsonify({'code': 405, 'message': '请求方法不允许', 'data': None}), 405
+
+    @app.errorhandler(413)
+    def payload_too_large(e):
+        limit_mb = int(app.config.get('MAX_CONTENT_LENGTH', 0) / 1024 / 1024)
+        return jsonify({
+            'code': 413,
+            'message': f'上传内容过大（上限 {limit_mb}MB）',
+            'data': None,
+        }), 413
 
     @app.errorhandler(500)
     def internal_error(e):

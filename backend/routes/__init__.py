@@ -12,6 +12,7 @@ def register_blueprints(app):
     from routes.stats import stats_bp
     from routes.bom import bom_bp
     from routes.boms import boms_bp
+    from routes.expenses import expenses_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(components_bp)
@@ -23,3 +24,4 @@ def register_blueprints(app):
     app.register_blueprint(stats_bp)
     app.register_blueprint(bom_bp)
     app.register_blueprint(boms_bp)
+    app.register_blueprint(expenses_bp)

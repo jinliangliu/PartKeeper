@@ -14,3 +14,8 @@ class Config:
     ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
     ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
     ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@example.com')
+
+    # 凭证附件落盘目录（非公开目录，不经静态文件服务暴露，读取需走鉴权接口）
+    UPLOAD_DIR = os.getenv('UPLOAD_DIR', os.path.join(_BASE_DIR, 'instance', 'uploads'))
+    # 请求体上限：凭证图限制 10MB，留出 multipart 开销余量
+    MAX_CONTENT_LENGTH = 12 * 1024 * 1024

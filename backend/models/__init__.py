@@ -1,5 +1,6 @@
+import hashlib
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, date
 
 db = SQLAlchemy()
 
@@ -63,7 +64,14 @@ class Component(db.Model):
     supplier_id = db.Column(db.Integer, db.ForeignKey('suppliers.id'))
     unit = db.Column(db.String(10), default='个')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
+    # --- 家庭场景通用属性（方案 B 时可平移到 Item 主表） ---
+    is_consumable = db.Column(db.Boolean, default=False)          # 是否为消耗品
+    consumption_rate = db.Column(db.Float)                        # 显式消耗速率（单位/天），留空则从出库流水推算
+    warranty_expiry = db.Column(db.Date)                          # 保修到期日
+    maintenance_cycle_days = db.Column(db.Integer)                # 维护周期（天）
+    last_maintenance_date = db.Column(db.Date)                    # 上次维护日期
+
     transactions = db.relationship('Transaction', backref='component', lazy=True)
 
 class Transaction(db.Model):
@@ -77,6 +85,131 @@ class Transaction(db.Model):
     order_id = db.Column(db.Integer)
     operator_id = db.Column(db.Integer, db.ForeignKey('users.id'))
     note = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class UtilityBill(db.Model):
+    """生活缴费账单（水电煤等）。以 dedup_key 唯一约束实现截图重复导入去重。"""
+    __tablename__ = 'utility_bills'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    category = db.Column(
+        db.Enum('water', 'electricity', 'gas', 'internet', 'phone', 'other'),
+        nullable=False,
+    )
+    amount = db.Column(db.Float, nullable=False)                  # 缴费金额（元）
+    paid_at = db.Column(db.DateTime, nullable=False)              # 缴费时间
+    period = db.Column(db.String(20))                             # 账单所属期，如 2026-10
+    counterparty = db.Column(db.String(100))                      # 收款方，如「国家电网」
+    external_id = db.Column(db.String(100))                       # 渠道交易单号（支付宝/微信/银行流水号等）
+    channel = db.Column(db.String(20), default='other')           # 缴费渠道：alipay/wechat/bank/cash/other
+    note = db.Column(db.String(255))
+    source = db.Column(db.String(30), default='screenshot')       # 录入来源：screenshot/manual
+    dedup_key = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    VALID_CHANNELS = ('alipay', 'wechat', 'bank', 'cash', 'other')
+
+    @staticmethod
+    def build_dedup_key(category, amount, paid_at, counterparty='', external_id='', channel='other'):
+        """生成去重键，对缴费渠道无偏见。
+
+        有渠道交易单号时：以「渠道 + 单号」为键（同一串单号在支付宝与微信是两笔不同交易，
+        必须带渠道区分）；无单号时用「渠道 + 类型 + 金额 + 缴费日期 + 收款方」规范化取哈希。
+        时间只取到「日」——账单截图通常不给出具体时分秒，同日不同时刻视为同一笔。
+        """
+        channel = str(channel or 'other').strip().lower()
+        if external_id and str(external_id).strip():
+            raw = f"ext|{channel}|{str(external_id).strip()}"
+        else:
+            dt = paid_at
+            if isinstance(dt, str):
+                dt = datetime.strptime(dt[:10], '%Y-%m-%d')
+            day = dt.strftime('%Y-%m-%d') if hasattr(dt, 'strftime') else str(dt)[:10]
+            party = ''.join(str(counterparty or '').split()).lower()
+            raw = f"noext|{channel}|{category}|{round(float(amount), 2):.2f}|{day}|{party}"
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+class Expense(db.Model):
+    """家庭各类开支记录（教育/培训/旅行/娱乐/购物/医疗等）。
+
+    与 UtilityBill 物理分表、逻辑归一：生活缴费有「账期」「收款方」等特化语义，
+    继续留在 utility_bills；其余开支落本表。统计时两表聚合为家庭总支出。
+    以 dedup_key 唯一约束实现截图/重复录入去重。
+    """
+    __tablename__ = 'expenses'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    category = db.Column(db.String(30), nullable=False, index=True)   # 一级类型，见 VALID_CATEGORIES
+    subcategory = db.Column(db.String(50))                            # 自由文本：英语培训 / 机票 / 电影
+    amount = db.Column(db.Float, nullable=False)                      # 金额（元）
+    occurred_at = db.Column(db.DateTime, nullable=False, index=True)   # 消费发生时间
+    merchant = db.Column(db.String(100))                             # 商户 / 机构 / 平台
+    channel = db.Column(db.String(20), default='other')              # alipay/wechat/bank/cash/other
+    external_id = db.Column(db.String(100))                          # 渠道交易单号（若有）
+    note = db.Column(db.String(255))
+    tags = db.Column(db.String(200))                                 # 逗号分隔标签，如「孩子,暑期」
+    currency = db.Column(db.String(8), default='CNY')
+    source = db.Column(db.String(30), default='manual')               # 录入来源：screenshot/manual
+    dedup_key = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    attachments = db.relationship(
+        'ExpenseAttachment',
+        backref='expense',
+        cascade='all, delete-orphan',
+        lazy=True,
+    )
+
+    # 一级类型固定集合（String 而非 Enum：后续新增类型无需改表结构）
+    VALID_CATEGORIES = (
+        'education', 'training', 'travel', 'entertainment',
+        'shopping', 'medical', 'dining', 'transport',
+        'housing', 'digital', 'other',
+    )
+    VALID_CHANNELS = ('alipay', 'wechat', 'bank', 'cash', 'other')
+
+    @staticmethod
+    def build_dedup_key(category, amount, occurred_at, merchant='', external_id='',
+                        channel='other'):
+        """生成去重键，语义与 UtilityBill 一致但对开支类型通用。
+
+        有渠道交易单号：``ext|渠道|单号``（同串单号跨渠道是不同交易，不能合并）。
+        无单号：``noext|渠道|类型|金额|日期|商户``，时间只取到「日」——
+        截图通常不给具体时刻，同日同商户同金额同类型视为同一笔。
+        """
+        channel = str(channel or 'other').strip().lower()
+        if external_id and str(external_id).strip():
+            raw = f"ext|{channel}|{str(external_id).strip()}"
+        else:
+            dt = occurred_at
+            if isinstance(dt, str):
+                dt = datetime.strptime(dt[:10], '%Y-%m-%d')
+            day = dt.strftime('%Y-%m-%d') if hasattr(dt, 'strftime') else str(dt)[:10]
+            who = ''.join(str(merchant or '').split()).lower()
+            raw = f"noext|{channel}|{category}|{round(float(amount), 2):.2f}|{day}|{who}"
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+class ExpenseAttachment(db.Model):
+    """开支凭证附件（票据/截图）。
+
+    只在库里存文件元信息，二进制落磁盘（instance/uploads/）——SQLite 存 BLOB
+    会迅速膨胀且拖慢备份迁移。sha256 既做完整性校验，也做「同一张图重复上传只存一份」的依据。
+    原图不存原始文件名（文件名本身可能是隐私），磁盘上以哈希命名。
+    """
+    __tablename__ = 'expense_attachments'
+    __table_args__ = (
+        db.UniqueConstraint('expense_id', 'sha256', name='uq_expense_attachment'),
+    )
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    expense_id = db.Column(db.Integer, db.ForeignKey('expenses.id'), nullable=False, index=True)
+    file_path = db.Column(db.String(500), nullable=False)   # 相对 instance/ 的路径
+    sha256 = db.Column(db.String(64), nullable=False, index=True)
+    size_bytes = db.Column(db.Integer)
+    mime = db.Column(db.String(100))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 

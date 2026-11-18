@@ -3,6 +3,8 @@ Flask-SQLAlchemy==3.1.1
 Flask-CORS==4.0.0
 PyJWT==2.8.0
 python-dotenv==1.0.0
+# 凭证图片处理：格式校验 + EXIF/GPS 剥离 + 重编码（上传与 MCP 两条通道共用）
+Pillow==13.0.0
 
 # MCP 对外通信（Streamable HTTP）
 # 注意：pydantic 必须锁在 2.11.x —— 2.14 移除了 mcp 依赖的内部 API（eval_type_backport）
