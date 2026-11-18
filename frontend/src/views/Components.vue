@@ -53,10 +53,11 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column v-if="authStore.isAdmin" label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row.id)">编辑</el-button>
-          <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+          <el-button link type="primary" @click="openMaintenance(row)">维护</el-button>
+          <el-button v-if="authStore.isAdmin" link type="primary" @click="openEdit(row.id)">编辑</el-button>
+          <el-button v-if="authStore.isAdmin" link type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -247,6 +248,133 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 维护记录与持有账本 -->
+    <el-drawer v-model="maintVisible" :title="`维护 · ${maintTarget?.name || ''}`" size="640px">
+      <div v-loading="maintLoading" class="maint-body">
+        <el-row :gutter="12" class="ledger-cards">
+          <el-col :span="6">
+            <div class="ledger-card">
+              <div class="lv">¥{{ ledger.total_spent ?? 0 }}</div>
+              <div class="ll">总投入</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="ledger-card">
+              <div class="lv">¥{{ ledger.purchase_total ?? 0 }}</div>
+              <div class="ll">购置（{{ ledger.purchase_count ?? 0 }} 笔）</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="ledger-card">
+              <div class="lv">¥{{ ledger.maintenance_total ?? 0 }}</div>
+              <div class="ll">维修保养</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="ledger-card">
+              <div class="lv">{{ ledger.annual_cost != null ? `¥${ledger.annual_cost}` : '—' }}</div>
+              <div class="ll">年均成本</div>
+            </div>
+          </el-col>
+        </el-row>
+
+        <div class="ledger-meta">
+          <el-tag v-if="ledger.warranty_days_left != null" size="small"
+                  :type="ledger.warranty_days_left < 0 ? 'danger' : (ledger.warranty_days_left <= 30 ? 'warning' : 'success')"
+                  effect="plain">
+            {{ ledger.warranty_days_left < 0 ? `已过保 ${-ledger.warranty_days_left} 天`
+               : `保修剩 ${ledger.warranty_days_left} 天` }}
+          </el-tag>
+          <el-tag v-if="ledger.next_maintenance_due" size="small"
+                  :type="ledger.maintenance_overdue ? 'danger' : 'info'" effect="plain">
+            {{ ledger.maintenance_overdue ? '维护已逾期' : '下次维护' }} {{ ledger.next_maintenance_due }}
+          </el-tag>
+          <span v-if="ledger.days_owned" class="muted">持有 {{ ledger.days_owned }} 天</span>
+          <span v-if="ledger.maintenance_record_count" class="muted">
+            维护 {{ ledger.maintenance_record_count }} 次
+          </span>
+        </div>
+
+        <el-divider content-position="left">新增维护记录</el-divider>
+        <el-form :model="maintForm" label-width="80px" class="maint-form">
+          <el-row :gutter="12">
+            <el-col :span="12">
+              <el-form-item label="类型">
+                <el-select v-model="maintForm.type" style="width: 100%">
+                  <el-option v-for="t in maintMeta.types" :key="t.value" :label="t.label" :value="t.value" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="日期">
+                <el-date-picker v-model="maintForm.performed_at" type="date" value-format="YYYY-MM-DD"
+                                style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="24">
+              <el-form-item label="内容" required>
+                <el-input v-model="maintForm.title" placeholder="换了 HEPA 滤芯 / 清洗冷凝器 / 主板维修" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="花费">
+                <el-input-number v-model="maintForm.cost" :min="0" :precision="2" :step="50"
+                                 controls-position="right" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="渠道">
+                <el-select v-model="maintForm.channel" style="width: 100%">
+                  <el-option v-for="c in maintMeta.channels" :key="c.value" :label="c.label" :value="c.value" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="服务商">
+                <el-input v-model="maintForm.vendor" placeholder="维修点 / 平台" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="备注">
+                <el-input v-model="maintForm.note" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="24">
+              <el-form-item label-width="80px">
+                <div class="maint-submit">
+                  <el-button type="primary" :loading="maintSaving" @click="submitMaintenance">保存维护记录</el-button>
+                  <span class="field-hint">
+                    花费 &gt; 0 会自动生成一笔「维修保养」开支并挂到本物品；维护日期会更新上次维护日
+                  </span>
+                </div>
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </el-form>
+
+        <el-divider content-position="left">维护历史</el-divider>
+        <el-empty v-if="!ledger.records?.length" description="还没有维护记录" :image-size="60" />
+        <el-timeline v-else>
+          <el-timeline-item v-for="rec in ledger.records" :key="rec.id"
+                            :timestamp="rec.performed_at" placement="top">
+            <div class="maint-item">
+              <div class="maint-head">
+                <el-tag size="small" effect="plain">{{ rec.type_label }}</el-tag>
+                <span class="maint-title">{{ rec.title }}</span>
+                <span v-if="rec.cost > 0" class="amount">¥{{ rec.cost }}</span>
+                <el-button link type="danger" size="small" @click="removeMaintenance(rec)">删除</el-button>
+              </div>
+              <div class="maint-sub">
+                <span v-if="rec.vendor">{{ rec.vendor }}</span>
+                <span v-if="rec.note">{{ rec.note }}</span>
+                <span v-if="!rec.expense_id && rec.cost === 0" class="muted">未产生费用</span>
+              </div>
+            </div>
+          </el-timeline-item>
+        </el-timeline>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -399,6 +527,95 @@ async function handleDelete(row) {
   load()
 }
 
+// --- 维护记录与持有账本 ---
+const maintVisible = ref(false)
+const maintLoading = ref(false)
+const maintSaving = ref(false)
+const maintTarget = ref(null)
+const maintMeta = ref({ types: [], channels: [] })
+const ledger = ref({})
+const maintForm = reactive({
+  type: 'cleaning', title: '', performed_at: '', cost: 0,
+  channel: 'wechat', vendor: '', note: ''
+})
+
+function today() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+async function loadMaintMeta() {
+  try {
+    const res = await http.get('/maintenances/meta')
+    maintMeta.value = res.data
+  } catch {
+    // 元信息拉取失败不阻塞抽屉，表单用默认值仍可提交
+  }
+}
+
+async function openMaintenance(row) {
+  maintTarget.value = row
+  Object.assign(maintForm, {
+    type: 'cleaning', title: '', performed_at: today(), cost: 0,
+    channel: 'wechat', vendor: '', note: ''
+  })
+  ledger.value = {}
+  maintVisible.value = true
+  await loadLedger()
+}
+
+async function loadLedger() {
+  if (!maintTarget.value) return
+  maintLoading.value = true
+  try {
+    const res = await http.get(`/maintenances/ledger/${maintTarget.value.id}`)
+    ledger.value = res.data
+  } finally {
+    maintLoading.value = false
+  }
+}
+
+async function submitMaintenance() {
+  if (!maintForm.title.trim()) {
+    ElMessage.warning('请填写本次维护做了什么')
+    return
+  }
+  maintSaving.value = true
+  try {
+    const res = await http.post('/maintenances', {
+      component_id: maintTarget.value.id,
+      type: maintForm.type,
+      title: maintForm.title,
+      performed_at: maintForm.performed_at || today(),
+      cost: maintForm.cost || 0,
+      channel: maintForm.channel,
+      vendor: maintForm.vendor,
+      note: maintForm.note
+    })
+    const warnings = res.data?.warnings || []
+    if (warnings.length) {
+      ElMessage.warning(warnings[0])
+    } else {
+      ElMessage.success(res.data?.cost > 0 ? `已记录，并生成开支 ¥${res.data.cost}` : '已记录')
+    }
+    Object.assign(maintForm, { title: '', cost: 0, vendor: '', note: '' })
+    await loadLedger()
+    load() // 上次维护日期变了，列表上的家庭属性标签要跟着刷新
+  } finally {
+    maintSaving.value = false
+  }
+}
+
+async function removeMaintenance(rec) {
+  await ElMessageBox.confirm(
+    `删除这条维护记录「${rec.title}」？已生成的 ¥${rec.cost || 0} 开支会保留在开支明细里。`,
+    '删除维护记录',
+    { type: 'warning' }
+  )
+  await http.delete(`/maintenances/${rec.id}`)
+  ElMessage.success('已删除')
+  await loadLedger()
+}
+
 function openBom() {
   bomFile.value = null
   bomResult.value = null
@@ -452,6 +669,7 @@ async function applyBom() {
 
 onMounted(() => {
   loadMeta()
+  loadMaintMeta()
   load()
 })
 </script>
@@ -488,6 +706,72 @@ onMounted(() => {
   color: #a8abb2;
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* --- 维护抽屉 --- */
+.ledger-cards {
+  margin-bottom: 12px;
+}
+
+.ledger-card {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px 12px;
+  text-align: center;
+}
+
+.ledger-card .lv {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.ledger-card .ll {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.ledger-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.maint-form {
+  margin-bottom: 4px;
+}
+
+.maint-submit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.maint-item .maint-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.maint-item .maint-title {
+  font-weight: 500;
+  flex: 1;
+}
+
+.maint-item .amount {
+  color: #f56c6c;
+  font-variant-numeric: tabular-nums;
+}
+
+.maint-item .maint-sub {
+  margin-top: 4px;
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: #909399;
 }
 
 :deep(.el-form-item__content) {

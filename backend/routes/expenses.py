@@ -12,25 +12,18 @@ from datetime import datetime
 from flask import Blueprint, current_app, jsonify, request, send_file
 from sqlalchemy import or_
 
-from models import db, Expense, ExpenseAttachment
+from models import Component, Expense, ExpenseAttachment, db
 from services import receipt_service
 from utils.decorators import admin_required, login_required
+from utils.ledger import CHANNELS as _CHANNELS, EXPENSE_LABELS as _LABELS
 
 expenses_bp = Blueprint('expenses', __name__, url_prefix='/api/expenses')
 
-CATEGORIES = [
-    ('education', '教育'), ('training', '培训'), ('travel', '旅行'),
-    ('entertainment', '娱乐'), ('shopping', '购物'), ('medical', '医疗'),
-    ('dining', '餐饮'), ('transport', '交通'), ('housing', '居住'),
-    ('digital', '数码'), ('other', '其他'),
-]
-CHANNELS = [
-    ('alipay', '支付宝'), ('wechat', '微信'), ('bank', '银行代扣'),
-    ('cash', '现金'), ('other', '其他'),
-]
+# 类型与渠道的中文标签统一由 utils.ledger 维护，改一处即全局生效
+CATEGORIES = list(_LABELS.items())
+CHANNELS = list(_CHANNELS.items())
 _CATEGORY_KEYS = {k for k, _ in CATEGORIES}
 _CHANNEL_KEYS = {k for k, _ in CHANNELS}
-_LABELS = dict(CATEGORIES)
 
 
 def _ok(data=None, message='success'):
@@ -70,6 +63,8 @@ def _expense_dict(exp, attachments=None):
         'note': exp.note,
         'tags': [t for t in (exp.tags or '').split(',') if t],
         'currency': exp.currency or 'CNY',
+        'component_id': exp.component_id,
+        'component_name': exp.component.name if exp.component else None,
         'attachments': [_att_dict(a) for a in (attachments or [])],
     }
 
@@ -94,6 +89,22 @@ def _parse_dt(value):
         except ValueError:
             continue
     return None
+
+
+def _resolve_component(raw):
+    """校验并归一化「关联物品」。返回 (component_id, None) 或 (None, 错误响应)。
+
+    空值、0、null 都视为不关联——生活开支大多数与具体物品无关。
+    """
+    if raw in (None, '', 0, '0'):
+        return None, None
+    try:
+        cid = int(raw)
+    except (TypeError, ValueError):
+        return None, _err('component_id 必须是整数')
+    if not db.session.get(Component, cid):
+        return None, _err(f'物品 ID {cid} 不存在', 404)
+    return cid, None
 
 
 @expenses_bp.route('/meta', methods=['GET'])
@@ -123,6 +134,9 @@ def list_expenses():
         query = query.filter(Expense.category == category)
     if channel in _CHANNEL_KEYS:
         query = query.filter(Expense.channel == channel)
+    component_id = request.args.get('component_id', type=int)
+    if component_id:
+        query = query.filter(Expense.component_id == component_id)
     if merchant:
         query = query.filter(Expense.merchant.like(f'%{merchant}%'))
     start_dt = _parse_day(request.args.get('start'))
@@ -141,7 +155,7 @@ def list_expenses():
         ))
 
     total_amount = query.with_entities(db.func.coalesce(db.func.sum(Expense.amount), 0)).scalar()
-    pagination = query.order_by(
+    pagination = query.options(db.joinedload(Expense.component)).order_by(
         Expense.occurred_at.desc(), Expense.id.desc()
     ).paginate(page=page, per_page=per_page, error_out=False)
 
@@ -192,6 +206,10 @@ def create_expense():
     if Expense.query.filter_by(dedup_key=key).first():
         return _err('该开支已存在（同渠道同单号，或同渠道同日同类型同金额同商户）', 409)
 
+    component_id, err = _resolve_component(body.get('component_id'))
+    if err:
+        return err
+
     exp = Expense(
         category=category,
         subcategory=str(body.get('subcategory') or '').strip() or None,
@@ -205,6 +223,7 @@ def create_expense():
         currency=str(body.get('currency') or 'CNY').strip().upper()[:8],
         source=str(body.get('source') or 'manual').strip(),
         dedup_key=key,
+        component_id=component_id,
     )
     db.session.add(exp)
     db.session.commit()
@@ -233,6 +252,26 @@ def delete_expense(expense_id):
     db.session.commit()
     return _ok({'id': expense_id, 'attachment_rows_removed': att_count},
                '已删除（凭证文件保留在磁盘，可用 gc 清理孤儿文件）')
+
+
+@expenses_bp.route('/<int:expense_id>/component', methods=['PUT'])
+@login_required
+def set_expense_component(expense_id):
+    """调整开支关联的物品。传 component_id=null/0 表示取消关联。
+
+    单独开这个接口，是为了让已经录过的开支也能补挂到物品上（逐字段 PATCH 语义），
+    不必重新提交整条记录而触发去重键重算。
+    """
+    exp = db.session.get(Expense, expense_id)
+    if not exp:
+        return _err('开支不存在', 404)
+    body = request.get_json(silent=True) or {}
+    component_id, err = _resolve_component(body.get('component_id'))
+    if err:
+        return err
+    exp.component_id = component_id
+    db.session.commit()
+    return _ok(_expense_dict(exp, exp.attachments), '已更新')
 
 
 @expenses_bp.route('/stats', methods=['GET'])

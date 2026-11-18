@@ -95,6 +95,10 @@ def migrate():
         'utility_bills': [
             ('channel', "VARCHAR(20) DEFAULT 'other'"),
         ],
+        'expenses': [
+            # 注：SQLite 的 ADD COLUMN 不能带外键约束，关联完整性由路由层校验
+            ('component_id', 'INTEGER'),
+        ],
     }
 
     for table, columns in additions.items():

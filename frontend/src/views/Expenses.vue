@@ -75,7 +75,15 @@
           </template>
         </el-table-column>
         <el-table-column prop="subcategory" label="子类" width="120" show-overflow-tooltip />
-        <el-table-column prop="merchant" label="商户 / 机构" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="merchant" label="商户 / 机构" min-width="130" show-overflow-tooltip />
+        <el-table-column label="物品" width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag v-if="row.component_name" size="small" type="success" effect="plain">
+              {{ row.component_name }}
+            </el-tag>
+            <el-button v-else link type="primary" @click="openLink(row)">关联</el-button>
+          </template>
+        </el-table-column>
         <el-table-column label="渠道" width="100">
           <template #default="{ row }">
             <span class="muted">{{ row.channel_label }}</span>
@@ -141,6 +149,14 @@
         </el-form-item>
         <el-form-item label="商户">
           <el-input v-model="form.merchant" placeholder="机构 / 平台 / 店铺" />
+        </el-form-item>
+        <el-form-item label="关联物品">
+          <el-select v-model="form.component_id" filterable remote clearable
+                     :remote-method="searchComponents" :loading="compLoading"
+                     placeholder="买家电/家具/数码时关联，便于算这台机器总共花了多少"
+                     style="width: 100%">
+            <el-option v-for="c in compOptions" :key="c.value" :label="c.label" :value="c.value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="渠道">
           <el-select v-model="form.channel" style="width: 100%">
@@ -208,6 +224,22 @@
         <el-button @click="receiptVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 关联物品 -->
+    <el-dialog v-model="linkVisible" title="关联到物品" width="440px">
+      <el-select v-model="linkComponentId" filterable remote clearable
+                 :remote-method="searchComponents" :loading="compLoading"
+                 placeholder="搜索物品名称，留空表示取消关联" style="width: 100%">
+        <el-option v-for="c in compOptions" :key="c.value" :label="c.label" :value="c.value" />
+      </el-select>
+      <div class="hint" style="margin-top: 10px">
+        关联后，该物品「维护」抽屉里的持有账本会把这笔钱算进购置成本
+      </div>
+      <template #footer>
+        <el-button @click="linkVisible = false">取消</el-button>
+        <el-button type="primary" :loading="linkSaving" @click="saveLink">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -237,8 +269,47 @@ const receipts = ref([])
 const pendingFiles = ref([])
 const form = reactive({
   category: 'education', subcategory: '', amount: 100, occurred_at: '', merchant: '',
-  channel: 'wechat', tags: '', note: ''
+  channel: 'wechat', tags: '', note: '', component_id: null
 })
+
+// --- 关联物品（远程搜索，物品多时不必一次全量拉取） ---
+const compOptions = ref([])
+const compLoading = ref(false)
+const linkVisible = ref(false)
+const linkRow = ref(null)
+const linkComponentId = ref(null)
+const linkSaving = ref(false)
+
+async function searchComponents(keyword = '') {
+  compLoading.value = true
+  try {
+    const res = await http.get('/components', { params: { page: 1, per_page: 20, keyword } })
+    compOptions.value = (res.data.items || []).map(i => ({ value: i.id, label: i.name }))
+  } finally {
+    compLoading.value = false
+  }
+}
+
+function openLink(row) {
+  linkRow.value = row
+  linkComponentId.value = row.component_id || null
+  linkVisible.value = true
+  searchComponents('')
+}
+
+async function saveLink() {
+  linkSaving.value = true
+  try {
+    await http.put(`/expenses/${linkRow.value.id}/component`, {
+      component_id: linkComponentId.value || null
+    })
+    ElMessage.success(linkComponentId.value ? '已关联' : '已取消关联')
+    linkVisible.value = false
+    await loadList()
+  } finally {
+    linkSaving.value = false
+  }
+}
 
 const trendRef = ref()
 const pieRef = ref()
@@ -353,10 +424,11 @@ function openCreate() {
   Object.assign(form, {
     category: 'education', subcategory: '', amount: 100,
     occurred_at: new Date().toISOString().slice(0, 10),
-    merchant: '', channel: 'wechat', tags: '', note: ''
+    merchant: '', channel: 'wechat', tags: '', note: '', component_id: null
   })
   clearPending()
   createVisible.value = true
+  searchComponents('')
 }
 
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp']

@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from models import db, Component, Category, Supplier, Location, Transaction
+from models import db, Component, Category, Expense, Maintenance, Supplier, Location, Transaction
 from utils.decorators import login_required, admin_required
 from datetime import datetime
 
@@ -271,7 +271,23 @@ def delete_component(component_id):
     component = Component.query.get(component_id)
     if not component:
         return jsonify({'code': 404, 'message': '物料不存在', 'data': None}), 404
-    
+
+    # 有出入库流水时不允许直接删：流水是历史凭证，删物料会让记录失去归属
+    txn_count = Transaction.query.filter_by(component_id=component_id).count()
+    if txn_count:
+        return jsonify({
+            'code': 400,
+            'message': f'该物品有 {txn_count} 条出入库流水，不能直接删除；请改用停用或先清理流水',
+            'data': None,
+        }), 400
+
+    # 维护记录随物品一起删除（脱离物品没有意义）；
+    # 开支是真花掉的钱，保留但解除关联
+    Maintenance.query.filter_by(component_id=component_id).delete()
+    Expense.query.filter_by(component_id=component_id).update(
+        {'component_id': None}, synchronize_session=False
+    )
+    db.session.expire(component)
     db.session.delete(component)
     db.session.commit()
     

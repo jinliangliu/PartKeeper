@@ -153,6 +153,8 @@ class Expense(db.Model):
     currency = db.Column(db.String(8), default='CNY')
     source = db.Column(db.String(30), default='manual')               # 录入来源：screenshot/manual
     dedup_key = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    # 可空外键：买家电、修空调这类钱可以挂到具体物品上，普通生活开支留空
+    component_id = db.Column(db.Integer, db.ForeignKey('components.id'), index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     attachments = db.relationship(
@@ -161,12 +163,13 @@ class Expense(db.Model):
         cascade='all, delete-orphan',
         lazy=True,
     )
+    component = db.relationship('Component', backref=db.backref('expenses', lazy=True))
 
     # 一级类型固定集合（String 而非 Enum：后续新增类型无需改表结构）
     VALID_CATEGORIES = (
         'education', 'training', 'travel', 'entertainment',
         'shopping', 'medical', 'dining', 'transport',
-        'housing', 'digital', 'other',
+        'housing', 'digital', 'maintenance', 'other',
     )
     VALID_CHANNELS = ('alipay', 'wechat', 'bank', 'cash', 'other')
 
@@ -211,6 +214,37 @@ class ExpenseAttachment(db.Model):
     size_bytes = db.Column(db.Integer)
     mime = db.Column(db.String(100))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class Maintenance(db.Model):
+    """物品维护记录：清洁保养、维修、更换耗材、巡检。
+
+    刻意**不存金额**——钱只记在 expenses 一处。维护产生的花费通过 ``expense_id``
+    关联到一笔开支（类型 maintenance，同时挂 component_id），这样：
+      · 家庭总支出自动包含维修费，不用在统计里加第三张表；
+      · 物品账本 = 该物品名下所有开支之和，购置与维修天然同源，不会两处对不上。
+
+    维护只记「发生了什么」：类型、内容、时间、服务商。没有花钱的日常保养
+    （自己清洗滤网）不产生开支，expense_id 留空。
+    """
+    __tablename__ = 'maintenances'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    component_id = db.Column(db.Integer, db.ForeignKey('components.id'),
+                             nullable=False, index=True)
+    type = db.Column(db.String(20), nullable=False, default='other', index=True)
+    title = db.Column(db.String(120), nullable=False)          # 做了什么：换滤芯 / 清洗冷凝器
+    performed_at = db.Column(db.DateTime, nullable=False, index=True)
+    vendor = db.Column(db.String(100))                         # 服务商 / 维修点
+    expense_id = db.Column(db.Integer, db.ForeignKey('expenses.id'), index=True)
+    note = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    component = db.relationship('Component', backref=db.backref('maintenances', lazy=True))
+    expense = db.relationship('Expense', backref=db.backref('maintenance', uselist=False))
+
+    # 维护类型固定集合（与 utils.ledger.MAINTENANCE_LABELS 一一对应）
+    VALID_TYPES = ('cleaning', 'repair', 'replacement', 'inspection', 'other')
 
 
 class Bom(db.Model):

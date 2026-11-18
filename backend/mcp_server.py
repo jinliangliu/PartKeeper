@@ -700,12 +700,10 @@ def get_utility_spend(months: int = 6, group: str = 'category') -> dict:
 # 工具函数：家庭各类开支（教育/培训/旅行/娱乐/购物/医疗…）
 # ---------------------------------------------------------------------------
 
-_EXPENSE_LABELS = {
-    'education': '教育', 'training': '培训', 'travel': '旅行',
-    'entertainment': '娱乐', 'shopping': '购物', 'medical': '医疗',
-    'dining': '餐饮', 'transport': '交通', 'housing': '居住',
-    'digital': '数码', 'other': '其他',
-}
+from utils.ledger import EXPENSE_LABELS as _EXPENSE_LABELS  # noqa: E402
+from utils.ledger import MAINTENANCE_ALIASES as _MAINTENANCE_ALIASES  # noqa: E402
+from utils.ledger import MAINTENANCE_LABELS as _MAINTENANCE_LABELS  # noqa: E402
+
 _EXPENSE_ALIASES = {
     '教育': 'education', '学费': 'education', '学习': 'education', 'education': 'education',
     '培训': 'training', '课程': 'training', '课外班': 'training', 'training': 'training',
@@ -717,6 +715,8 @@ _EXPENSE_ALIASES = {
     '交通': 'transport', '打车': 'transport', 'transport': 'transport',
     '居住': 'housing', '房租': 'housing', '物业': 'housing', 'housing': 'housing',
     '数码': 'digital', '电子': 'digital', 'digital': 'digital',
+    '维修保养': 'maintenance', '维修': 'maintenance', '保养': 'maintenance',
+    'maintenance': 'maintenance',
     '其他': 'other', 'other': 'other',
 }
 
@@ -728,6 +728,32 @@ def _normalize_expense_category(value):
         return ''
     key = _EXPENSE_ALIASES.get(raw, raw.lower())
     return key if key in _EXPENSE_LABELS else ''
+
+
+def _resolve_component_ref(raw):
+    """解析对话传入的物品引用，返回 (component_id 或 None, 错误说明或 None)。
+
+    接受物品 ID（int 或纯数字字符串），也接受名称精确匹配——用户在对话里更像
+    会说「吸尘器」而不是报 ID。重名时要求改用 ID，避免挂错物品。
+    """
+    from models import Component, db
+    if raw in (None, '', 0, '0'):
+        return None, None
+    text = str(raw).strip()
+    if text.isdigit():
+        component = db.session.get(Component, int(text))
+        if not component:
+            return None, f'物品 ID {text} 不存在'
+        return component.id, None
+    matches = Component.query.filter(Component.name == text).limit(2).all()
+    if not matches:
+        matches = Component.query.filter(Component.name.ilike(f'%{text}%')).limit(2).all()
+    if not matches:
+        return None, f'未找到名为「{text}」的物品'
+    if len(matches) > 1:
+        names = '、'.join(f'{m.name}(id={m.id})' for m in matches)
+        return None, f'「{text}」匹配到多个物品（{names}），请改用物品 ID'
+    return matches[0].id, None
 
 
 def _normalize_tags(value):
@@ -793,6 +819,8 @@ def _expense_dict(e, attachments=None):
         'tags': [t for t in (e.tags or '').split(',') if t],
         'currency': e.currency or 'CNY',
         'source': e.source,
+        'component_id': e.component_id,
+        'component_name': e.component.name if e.component else None,
     }
     if attachments is not None:
         d['attachments'] = attachments
@@ -801,14 +829,15 @@ def _expense_dict(e, attachments=None):
 
 @mcp.tool()
 def record_expenses(expenses: list[dict]) -> dict:
-    """批量录入家庭各类开支（教育/培训/旅行/娱乐/购物/医疗/餐饮/交通/居住/数码/其他）。
+    """批量录入家庭各类开支（教育/培训/旅行/娱乐/购物/医疗/餐饮/交通/居住/数码/维修保养/其他）。
 
     注意：水费、电费、燃气费、宽带费、话费请用 ``record_utility_bills``，
     不要记到这里，否则家庭总支出会重复计算。
+    修东西、保养家电请优先用 ``record_maintenance``——它会同时生成维修开支并挂到物品上。
 
     expenses 为开支字典列表，每条支持以下键：
-      category（必填，可用中文或英文：教育/培训/旅行/娱乐/购物/医疗/餐饮/交通/居住/数码/其他，
-        或 education/training/travel/entertainment/shopping/medical/dining/transport/housing/digital/other）、
+      category（必填，可用中文或英文：教育/培训/旅行/娱乐/购物/医疗/餐饮/交通/居住/数码/维修保养/其他，
+        或 education/training/travel/entertainment/shopping/medical/dining/transport/housing/digital/maintenance/other）、
       amount（必填，金额，大于 0）、
       occurred_at（必填，消费发生时间，YYYY-MM-DD 或 YYYY-MM-DD HH:MM）、
       subcategory（可选，自由文本细分，如「英语培训」「机票」「电影」）、
@@ -817,6 +846,8 @@ def record_expenses(expenses: list[dict]) -> dict:
       external_id（该渠道交易单号，可选；填了可跨截图可靠去重）、
       note（备注，可选）、tags（标签，列表或逗号分隔字符串，可选）、
       source（录入来源，默认 manual；截图录入可填 screenshot）、
+      component_id（可选，关联物品：填物品 ID 或物品名称，如「吸尘器」。买了家电、
+        家具、数码产品时建议填上，之后用 get_component_ledger 就能看到这台机器总共花了多少）、
       receipt_path（凭证图片路径，可选；文件已存在于磁盘时登记其 SHA-256 与大小，
         不存在只记 warning 不阻断录入。文件上传接口尚未提供，路径需指向已有文件）。
 
@@ -865,6 +896,10 @@ def record_expenses(expenses: list[dict]) -> dict:
             channel = _normalize_channel(item.get('channel'), Expense.VALID_CHANNELS)
             external_id = str(item.get('external_id') or '').strip() or None
             merchant = str(item.get('merchant') or '').strip() or None
+            component_id, comp_error = _resolve_component_ref(item.get('component_id'))
+            if comp_error:
+                failed.append({'index': idx, 'reason': comp_error})
+                continue
             key = Expense.build_dedup_key(
                 category, amount, occurred_at, merchant, external_id, channel
             )
@@ -893,6 +928,7 @@ def record_expenses(expenses: list[dict]) -> dict:
                 currency=str(item.get('currency') or 'CNY').strip().upper()[:8],
                 source=str(item.get('source') or 'manual').strip(),
                 dedup_key=key,
+                component_id=component_id,
             )
             db.session.add(expense)
             db.session.flush()  # 先拿到 id，便于挂凭证
@@ -965,13 +1001,14 @@ def attach_expense_receipt(expense_id: int, file_path: str) -> dict:
 @mcp.tool()
 def list_expenses(category: str = '', subcategory: str = '', merchant: str = '',
                   channel: str = '', start: str = '', end: str = '',
-                  keyword: str = '', limit: int = 100) -> dict:
+                  keyword: str = '', component_id: str = '', limit: int = 100) -> dict:
     """查询家庭开支明细。
 
     category 可填中文或英文类型名；subcategory/merchant 为模糊匹配；
     channel 可填 alipay/wechat/bank/cash/other；start/end 为 YYYY-MM-DD；
     keyword 在备注、商户、子类、标签中模糊搜索。
-    每条记录附带已登记的凭证附件（路径/哈希/大小/MIME）。
+    component_id 填物品 ID 或名称，只看挂在某个物品上的开支（如「吸尘器花了多少」）。
+    每条记录附带已登记的凭证附件（路径/哈希/大小/MIME）与关联物品。
     """
     from sqlalchemy import or_
     from models import Expense, ExpenseAttachment
@@ -981,6 +1018,11 @@ def list_expenses(category: str = '', subcategory: str = '', merchant: str = '',
 
     with _app().app_context():
         query = Expense.query
+        if component_id:
+            ref_id, ref_error = _resolve_component_ref(component_id)
+            if ref_error:
+                return {'error': ref_error}
+            query = query.filter(Expense.component_id == ref_id)
         if category_key:
             query = query.filter(Expense.category == category_key)
         if subcategory:
@@ -1188,6 +1230,137 @@ def get_household_spend_overview(months: int = 6) -> dict:
             'avg_per_month': round(grand_total / months, 2) if months else 0.0,
             'note': '同一笔支出若同时记入缴费与开支，会重复计算；每笔只记一处。',
         }
+
+
+@mcp.tool()
+def record_maintenance(component_id: str, title: str, performed_at: str = '',
+                       type: str = '', vendor: str = '', cost: float = 0,
+                       channel: str = '', note: str = '') -> dict:
+    """记录一次物品维护（清洁保养 / 维修 / 更换耗材 / 巡检）。
+
+    component_id 填物品 ID 或名称（如「吸尘器」）；
+    title 说明做了什么（如「更换 HEPA 滤芯」「清洗冷凝器」「主板维修」）；
+    performed_at 为 YYYY-MM-DD，留空则记为今天；
+    type 可选 cleaning/repair/replacement/inspection/other，
+      也接受中文「清洁/保养/维修/更换/巡检」；
+    cost 为本次花费，大于 0 时会自动生成一笔「维修保养」开支并挂到该物品上
+      （同渠道同日同金额已存在时不重复记账，返回 warnings 说明）；
+    channel 为付款渠道，默认 other。
+
+    记录后会自动把该物品的「上次维护日期」推到本次，维护提醒随之顺延。
+    查某件东西总共花了多少、修过几次，用 get_component_ledger。
+    """
+    from models import Component, db
+    from services import maintenance_service
+    with _app().app_context():
+        ref_id, ref_error = _resolve_component_ref(component_id)
+        if ref_error:
+            return {'error': ref_error}
+        if not ref_id:
+            return {'error': '请提供物品 ID 或名称'}
+        component = db.session.get(Component, ref_id)
+        if not component:
+            return {'error': f'物品 ID {ref_id} 不存在'}
+        try:
+            record, warnings = maintenance_service.create_record(
+                component,
+                title=title,
+                performed_at=performed_at or datetime.now().strftime('%Y-%m-%d'),
+                mtype=type,
+                vendor=vendor,
+                note=note,
+                cost=cost,
+                channel=channel,
+            )
+        except maintenance_service.MaintenanceError as exc:
+            return {'error': str(exc)}
+
+        data = maintenance_service.serialize(record, with_component=True)
+        data['warnings'] = warnings
+        data['last_maintenance_date'] = (
+            component.last_maintenance_date.strftime('%Y-%m-%d')
+            if component.last_maintenance_date else None
+        )
+        return data
+
+
+@mcp.tool()
+def list_maintenances(component_id: str = '', type: str = '', start: str = '',
+                      end: str = '', keyword: str = '', limit: int = 100) -> dict:
+    """查询维护记录。
+
+    component_id 可填物品 ID 或名称，只看某个物品的维护历史；
+    type 可选 cleaning/repair/replacement/inspection/other（也接受中文）；
+    start/end 为 YYYY-MM-DD；keyword 在维护内容、服务商、备注中模糊搜索。
+    """
+    from models import Maintenance
+    from utils.ledger import MAINTENANCE_LABELS
+    with _app().app_context():
+        query = Maintenance.query
+        if component_id:
+            ref_id, ref_error = _resolve_component_ref(component_id)
+            if ref_error:
+                return {'error': ref_error}
+            query = query.filter(Maintenance.component_id == ref_id)
+        if type:
+            want = _MAINTENANCE_ALIASES.get(type.strip(), type.strip().lower())
+            query = query.filter(Maintenance.type == want)
+        start_dt = _parse_datetime(start) if start else None
+        end_dt = _parse_datetime(end) if end else None
+        if end_dt:
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        if start_dt:
+            query = query.filter(Maintenance.performed_at >= start_dt)
+        if end_dt:
+            query = query.filter(Maintenance.performed_at <= end_dt)
+        if keyword:
+            like = f'%{keyword}%'
+            from sqlalchemy import or_
+            query = query.filter(or_(
+                Maintenance.title.ilike(like),
+                Maintenance.vendor.ilike(like),
+                Maintenance.note.ilike(like),
+            ))
+
+        total = query.count()
+        rows = query.order_by(
+            Maintenance.performed_at.desc(), Maintenance.id.desc()
+        ).limit(max(1, min(int(limit), 500))).all()
+
+        from services.maintenance_service import serialize
+        items = []
+        for m in rows:
+            row = serialize(m, with_component=True)
+            row['type_label'] = MAINTENANCE_LABELS.get(m.type, m.type)
+            items.append(row)
+        return {
+            'total': total,
+            'count': len(items),
+            'type_labels': MAINTENANCE_LABELS,
+            'items': items,
+        }
+
+
+@mcp.tool()
+def get_component_ledger(component_id: str) -> dict:
+    """查看某个物品的持有账本：买它花了多少、修它花了多少、修过几次、年均成本、保修还剩多久。
+
+    component_id 可填物品 ID 或名称。购置成本取该物品名下非维修类开支，
+    维修成本取维修类开支，两者同源于开支表，不会重复计算。
+    没有登记过开支的物品只会显示维护次数与保修状态。
+    """
+    from models import Component, db
+    from services.maintenance_service import build_ledger
+    with _app().app_context():
+        ref_id, ref_error = _resolve_component_ref(component_id)
+        if ref_error:
+            return {'error': ref_error}
+        if not ref_id:
+            return {'error': '请提供物品 ID 或名称'}
+        component = db.session.get(Component, ref_id)
+        if not component:
+            return {'error': f'物品 ID {ref_id} 不存在'}
+        return build_ledger(component)
 
 
 @mcp.tool()

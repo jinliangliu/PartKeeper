@@ -26,7 +26,29 @@ EXPENSE_LABELS = {
     'transport': '交通',
     'housing': '居住',
     'digital': '数码',
+    'maintenance': '维修保养',
     'other': '其他',
+}
+
+# 维护类型 -> 中文标签（key 必须与 models.Maintenance.VALID_TYPES 一致）
+MAINTENANCE_LABELS = {
+    'cleaning': '清洁保养',
+    'repair': '维修',
+    'replacement': '更换耗材',
+    'inspection': '巡检',
+    'other': '其他',
+}
+
+# 维护类型的中文/别名 -> 枚举值（供对话录入时识别口语说法）
+MAINTENANCE_ALIASES = {
+    '清洁': 'cleaning', '清洗': 'cleaning', '保养': 'cleaning', '维护': 'cleaning',
+    'cleaning': 'cleaning',
+    '维修': 'repair', '修理': 'repair', '报修': 'repair', 'repair': 'repair',
+    '更换': 'replacement', '换件': 'replacement', '换滤芯': 'replacement',
+    '耗材': 'replacement', 'replacement': 'replacement',
+    '巡检': 'inspection', '检查': 'inspection', '年检': 'inspection',
+    'inspection': 'inspection',
+    '其他': 'other', 'other': 'other',
 }
 
 # 缴费渠道 -> 中文标签
