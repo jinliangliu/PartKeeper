@@ -20,6 +20,7 @@
         <el-menu-item index="/transactions">库存流水</el-menu-item>
         <el-menu-item index="/low-stock">低库存预警</el-menu-item>
         <el-menu-item index="/statistics">统计分析</el-menu-item>
+        <el-menu-item index="/utility-bills">生活缴费</el-menu-item>
         <el-menu-item index="/expenses">家庭开支</el-menu-item>
         <el-menu-item v-if="authStore.isAdmin" index="/users">用户管理</el-menu-item>
       </el-menu>

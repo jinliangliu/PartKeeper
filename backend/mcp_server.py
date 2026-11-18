@@ -128,19 +128,11 @@ def _parse_datetime(value):
     return None
 
 
-_CHANNEL_ALIASES = {
-    '微信': 'wechat', '微信支付': 'wechat', 'wx': 'wechat',
-    '支付宝': 'alipay', 'ali': 'alipay',
-    '银行': 'bank', '银行代扣': 'bank', '银行卡': 'bank', 'card': 'bank',
-    '现金': 'cash',
-}
-
-
-def _normalize_channel(value, allowed):
-    """把中文/别名渠道名归一化为英文枚举值；无法识别时归入 other。"""
-    raw = str(value or 'other').strip().lower()
-    channel = _CHANNEL_ALIASES.get(raw, raw)
-    return channel if channel in allowed else 'other'
+# 渠道别名与归一化统一由 utils.ledger 维护，Web 与 MCP 共用一套，避免标签漂移
+from utils.ledger import CHANNEL_ALIASES as _CHANNEL_ALIASES  # noqa: E402
+from utils.ledger import UTILITY_CHANNELS as _UTILITY_CHANNELS  # noqa: E402
+from utils.ledger import UTILITY_LABELS as _UTILITY_LABELS  # noqa: E402
+from utils.ledger import normalize_channel as _normalize_channel  # noqa: E402
 
 
 def _resolve_receipt_path(raw_path):
@@ -505,16 +497,6 @@ def get_purchase_spend(months: int = 6, group: str = 'category') -> dict:
 # ---------------------------------------------------------------------------
 # 工具函数：生活缴费账单
 # ---------------------------------------------------------------------------
-
-_UTILITY_LABELS = {
-    'water': '水费', 'electricity': '电费', 'gas': '燃气费',
-    'internet': '宽带费', 'phone': '话费', 'other': '其他',
-}
-_UTILITY_CHANNELS = {
-    'alipay': '支付宝', 'wechat': '微信', 'bank': '银行代扣',
-    'cash': '现金', 'other': '其他渠道',
-}
-
 
 def _bill_dict(b):
     return {

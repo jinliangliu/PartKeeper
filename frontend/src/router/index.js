@@ -24,6 +24,7 @@ const routes = [
       { path: 'transactions', name: 'transactions', component: () => import('../views/Transactions.vue'), meta: { title: '库存流水' } },
       { path: 'low-stock', name: 'low-stock', component: () => import('../views/LowStock.vue'), meta: { title: '低库存预警' } },
       { path: 'statistics', name: 'statistics', component: () => import('../views/Statistics.vue'), meta: { title: '统计分析' } },
+      { path: 'utility-bills', name: 'utility-bills', component: () => import('../views/UtilityBills.vue'), meta: { title: '生活缴费' } },
       { path: 'expenses', name: 'expenses', component: () => import('../views/Expenses.vue'), meta: { title: '家庭开支' } },
       { path: 'users', name: 'users', component: () => import('../views/Users.vue'), meta: { title: '用户管理', admin: true } }
     ]
