@@ -35,6 +35,24 @@
       <el-table-column prop="min_stock" label="最低库存" width="90" align="center" />
       <el-table-column prop="location" label="库位" width="100" />
       <el-table-column prop="supplier" label="供应商" width="120" />
+      <el-table-column label="家庭属性" width="150">
+        <template #default="{ row }">
+          <div class="home-tags">
+            <el-tag v-if="row.is_consumable" size="small" type="warning" effect="plain">消耗品</el-tag>
+            <el-tag v-if="warrantyState(row) === 'expired'" size="small" type="danger" effect="plain">
+              已过保
+            </el-tag>
+            <el-tag v-else-if="warrantyState(row) === 'soon'" size="small" type="warning" effect="plain">
+              将过保
+            </el-tag>
+            <el-tag v-else-if="warrantyState(row) === 'active'" size="small" type="success" effect="plain">
+              保修中
+            </el-tag>
+            <el-tag v-if="maintenanceOverdue(row)" size="small" type="danger" effect="plain">待维护</el-tag>
+            <span v-if="!hasHomeInfo(row)" class="muted">—</span>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column v-if="authStore.isAdmin" label="操作" width="140" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row.id)">编辑</el-button>
@@ -55,7 +73,7 @@
       />
     </div>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑物料' : '新增物料'" width="640px">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑物料' : '新增物料'" width="720px">
       <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
         <el-row :gutter="12">
           <el-col :span="12">
@@ -112,6 +130,49 @@
           <el-col :span="24">
             <el-form-item label="Datasheet">
               <el-input v-model="form.datasheet_url" placeholder="数据手册链接" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">家庭属性（可选）</el-divider>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="消耗品">
+              <el-switch v-model="form.is_consumable" />
+              <span class="field-hint">会消耗、需要定期补货</span>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="消耗速率">
+              <el-input-number v-model="form.consumption_rate" :min="0" :precision="2" :step="0.5"
+                               controls-position="right" placeholder="单位/天"
+                               :disabled="!form.is_consumable" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="保修到期">
+              <el-date-picker v-model="form.warranty_expiry" type="date" value-format="YYYY-MM-DD"
+                              placeholder="购买保修截止日" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="维护周期">
+              <el-input-number v-model="form.maintenance_cycle_days" :min="0" :step="30"
+                               controls-position="right" placeholder="天数"
+                               style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="上次维护">
+              <el-date-picker v-model="form.last_maintenance_date" type="date" value-format="YYYY-MM-DD"
+                              placeholder="填了才会算下次维护日" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label-width="100px">
+              <span class="field-hint">
+                维护提醒 = 上次维护日期 + 维护周期；消耗速率留空则由出库流水推算
+              </span>
             </el-form-item>
           </el-col>
         </el-row>
@@ -207,9 +268,43 @@ const formRef = ref()
 const form = reactive({
   name: '', value: '', package: '', tolerance: '', brand: '', unit: '个',
   category_id: null, location_id: null, supplier_id: null,
-  min_stock: 0, current_stock: 0, datasheet_url: ''
+  min_stock: 0, current_stock: 0, datasheet_url: '',
+  is_consumable: false, consumption_rate: null, warranty_expiry: '',
+  maintenance_cycle_days: null, last_maintenance_date: ''
 })
 const rules = { name: [{ required: true, message: '请输入物料名称', trigger: 'blur' }] }
+
+// --- 家庭属性：与 MCP 的 list_expiring_warranties 保持同一套判定 ---
+const SOON_DAYS = 30
+
+function daysUntil(dateStr) {
+  if (!dateStr) return null
+  const target = new Date(`${dateStr}T00:00:00`)
+  if (Number.isNaN(target.getTime())) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.round((target - today) / 86400000)
+}
+
+function warrantyState(row) {
+  const days = daysUntil(row.warranty_expiry)
+  if (days === null) return ''
+  if (days < 0) return 'expired'
+  return days <= SOON_DAYS ? 'soon' : 'active'
+}
+
+function maintenanceOverdue(row) {
+  if (!row.last_maintenance_date || !row.maintenance_cycle_days) return false
+  const elapsed = daysUntil(row.last_maintenance_date)
+  if (elapsed === null) return false
+  return -elapsed >= row.maintenance_cycle_days
+}
+
+function hasHomeInfo(row) {
+  return Boolean(
+    row.is_consumable || row.warranty_expiry || row.maintenance_cycle_days || row.last_maintenance_date
+  )
+}
 
 const categoryOptions = ref([])
 const suppliers = ref([])
@@ -260,7 +355,9 @@ function resetForm() {
   Object.assign(form, {
     name: '', value: '', package: '', tolerance: '', brand: '', unit: '个',
     category_id: null, location_id: null, supplier_id: null,
-    min_stock: 0, current_stock: 0, datasheet_url: ''
+    min_stock: 0, current_stock: 0, datasheet_url: '',
+    is_consumable: false, consumption_rate: null, warranty_expiry: '',
+    maintenance_cycle_days: null, last_maintenance_date: ''
   })
 }
 
@@ -375,5 +472,25 @@ onMounted(() => {
 .text-danger {
   color: #f56c6c;
   font-weight: 600;
+}
+
+.home-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.muted {
+  color: #c0c4cc;
+}
+
+.field-hint {
+  color: #a8abb2;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+:deep(.el-form-item__content) {
+  gap: 8px;
 }
 </style>

@@ -5,6 +5,53 @@ from datetime import datetime
 
 components_bp = Blueprint('components', __name__, url_prefix='/api/components')
 
+
+def _parse_date(value, field='日期'):
+    """把 YYYY-MM-DD 解析为 date；空值返回 None，格式错误抛 ValueError。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == 'null':
+        return None
+    try:
+        return datetime.strptime(text[:10], '%Y-%m-%d').date()
+    except ValueError:
+        raise ValueError(f'{field}格式无效，应为 YYYY-MM-DD')
+
+
+def _date_out(value):
+    return value.isoformat() if value else None
+
+
+def _float_or_none(value):
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _home_fields(item):
+    """家庭生命周期属性：与物品类型无关，Web 与 MCP 共用同一批字段。"""
+    return {
+        'is_consumable': bool(item.is_consumable),
+        'consumption_rate': item.consumption_rate,
+        'warranty_expiry': _date_out(item.warranty_expiry),
+        'maintenance_cycle_days': item.maintenance_cycle_days,
+        'last_maintenance_date': _date_out(item.last_maintenance_date),
+    }
+
+
 @components_bp.route('', methods=['GET'])
 @login_required
 def get_components():
@@ -47,7 +94,8 @@ def get_components():
             'category': item.category.name if item.category else None,
             'location': item.location.name if item.location else None,
             'supplier': item.supplier.name if item.supplier else None,
-            'created_at': item.created_at.isoformat()
+            'created_at': item.created_at.isoformat(),
+            **_home_fields(item)
         })
     
     return jsonify({
@@ -110,7 +158,8 @@ def get_component(component_id):
             'category_id': component.category_id,
             'location_id': component.location_id,
             'supplier_id': component.supplier_id,
-            'created_at': component.created_at.isoformat()
+            'created_at': component.created_at.isoformat(),
+            **_home_fields(component)
         }
     })
 
@@ -120,7 +169,13 @@ def create_component():
     data = request.get_json()
     if not data or not data.get('name'):
         return jsonify({'code': 400, 'message': '物料名称不能为空', 'data': None}), 400
-    
+
+    try:
+        warranty_expiry = _parse_date(data.get('warranty_expiry'), '保修到期')
+        last_maintenance = _parse_date(data.get('last_maintenance_date'), '上次维护日期')
+    except ValueError as exc:
+        return jsonify({'code': 400, 'message': str(exc), 'data': None}), 400
+
     component = Component(
         name=data['name'],
         value=data.get('value'),
@@ -133,7 +188,12 @@ def create_component():
         unit=data.get('unit', '个'),
         category_id=data.get('category_id'),
         location_id=data.get('location_id'),
-        supplier_id=data.get('supplier_id')
+        supplier_id=data.get('supplier_id'),
+        is_consumable=bool(data.get('is_consumable')),
+        consumption_rate=_float_or_none(data.get('consumption_rate')),
+        warranty_expiry=warranty_expiry,
+        maintenance_cycle_days=_int_or_none(data.get('maintenance_cycle_days')),
+        last_maintenance_date=last_maintenance,
     )
     
     db.session.add(component)
@@ -155,7 +215,25 @@ def update_component(component_id):
     data = request.get_json()
     if not data:
         return jsonify({'code': 400, 'message': '请求数据不能为空', 'data': None}), 400
-    
+
+    if 'warranty_expiry' in data or 'last_maintenance_date' in data:
+        try:
+            if 'warranty_expiry' in data:
+                component.warranty_expiry = _parse_date(data['warranty_expiry'], '保修到期')
+            if 'last_maintenance_date' in data:
+                component.last_maintenance_date = _parse_date(
+                    data['last_maintenance_date'], '上次维护日期'
+                )
+        except ValueError as exc:
+            return jsonify({'code': 400, 'message': str(exc), 'data': None}), 400
+
+    if 'is_consumable' in data:
+        component.is_consumable = bool(data['is_consumable'])
+    if 'consumption_rate' in data:
+        component.consumption_rate = _float_or_none(data['consumption_rate'])
+    if 'maintenance_cycle_days' in data:
+        component.maintenance_cycle_days = _int_or_none(data['maintenance_cycle_days'])
+
     if 'name' in data:
         component.name = data['name']
     if 'value' in data:
