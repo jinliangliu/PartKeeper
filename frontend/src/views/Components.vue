@@ -18,11 +18,56 @@
       <el-button v-if="authStore.isAdmin" type="success" @click="openCreate">新增物品</el-button>
     </div>
 
-    <el-table :data="items" v-loading="loading" border stripe>
+    <div v-if="selectedIds.length" class="batch-bar">
+      <span>已选 <b>{{ selectedIds.length }}</b> 项</span>
+      <el-select v-model="batchKind" placeholder="设为类型" size="small" style="width: 140px">
+        <el-option v-for="k in KIND_OPTIONS" :key="k.value" :label="k.label" :value="k.value" />
+      </el-select>
+      <el-button
+        type="primary"
+        size="small"
+        :disabled="!batchKind"
+        :loading="batchSaving"
+        @click="applyBatchKind"
+      >
+        应用
+      </el-button>
+      <el-button size="small" @click="clearSelection">取消选择</el-button>
+      <span class="muted batch-hint">只改类型，原 值/封装 等信息保留</span>
+    </div>
+
+    <el-table
+      ref="tableRef"
+      :data="items"
+      v-loading="loading"
+      border
+      stripe
+      @selection-change="onSelectionChange"
+    >
+      <el-table-column v-if="authStore.isAdmin" type="selection" width="44" />
       <el-table-column prop="id" label="ID" width="60" />
-      <el-table-column label="类型" width="96" align="center">
+      <el-table-column label="类型" width="112" align="center">
         <template #default="{ row }">
-          <el-tag size="small" effect="plain">{{ kindLabel(row.kind) }}</el-tag>
+          <el-dropdown
+            v-if="authStore.isAdmin"
+            trigger="click"
+            @command="(k) => quickChangeKind(row, k)"
+          >
+            <el-tag size="small" effect="plain" class="kind-tag">{{ kindLabel(row.kind) }}</el-tag>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="k in KIND_OPTIONS"
+                  :key="k.value"
+                  :command="k.value"
+                  :disabled="k.value === row.kind"
+                >
+                  {{ k.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-tag v-else size="small" effect="plain">{{ kindLabel(row.kind) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="name" label="名称" min-width="120" />
@@ -504,6 +549,54 @@ async function load() {
   }
 }
 
+// --- 类型快速修改 ---
+
+const tableRef = ref()
+const selectedIds = ref([])
+const batchKind = ref('')
+const batchSaving = ref(false)
+
+function onSelectionChange(rows) {
+  selectedIds.value = rows.map((r) => r.id)
+}
+
+function clearSelection() {
+  tableRef.value?.clearSelection()
+  selectedIds.value = []
+  batchKind.value = ''
+}
+
+async function quickChangeKind(row, kind) {
+  if (!kind || kind === row.kind) return
+  try {
+    await http.put(`/components/${row.id}`, { kind })
+    ElMessage.success(`已设为${kindLabel(kind)}`)
+    await load()
+  } catch (e) {
+    // 失败时不做本地赋值，列表保持服务端真实状态
+  }
+}
+
+async function applyBatchKind() {
+  if (!selectedIds.value.length || !batchKind.value) return
+  batchSaving.value = true
+  try {
+    const res = await http.post('/components/batch-kind', {
+      ids: selectedIds.value,
+      kind: batchKind.value
+    })
+    const d = res.data || {}
+    let msg = `已将 ${d.matched ?? selectedIds.value.length} 项设为${kindLabel(batchKind.value)}`
+    if (d.changed !== d.matched) msg += `（${d.matched - d.changed} 项原本就是该类型）`
+    if (d.missing?.length) msg += `，${d.missing.length} 项已不存在`
+    ElMessage.success(msg)
+    clearSelection()
+    await load()
+  } finally {
+    batchSaving.value = false
+  }
+}
+
 function resetForm() {
   Object.assign(form, {
     kind: 'electronic',
@@ -727,6 +820,27 @@ onMounted(() => {
 
 .muted {
   color: #c0c4cc;
+}
+
+/* --- 批量改类型 --- */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  font-size: 13px;
+}
+
+.batch-hint {
+  font-size: 12px;
+}
+
+.kind-tag {
+  cursor: pointer;
 }
 
 .field-hint {

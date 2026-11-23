@@ -36,6 +36,19 @@ def _parse_kind(value):
     return raw
 
 
+KIND_LABELS = {
+    'electronic': '电子元器件',
+    'appliance': '家电',
+    'furniture': '家具',
+    'vehicle': '车辆',
+    'other': '其他',
+}
+
+
+def _kind_label(kind):
+    return KIND_LABELS.get(kind, kind)
+
+
 def _float_or_none(value):
     if value in (None, ''):
         return None
@@ -320,4 +333,55 @@ def delete_component(item_id):
         'code': 200,
         'message': '删除成功',
         'data': None
+    })
+
+
+@components_bp.route('/batch-kind', methods=['POST'])
+@admin_required
+def batch_update_kind():
+    """批量修改物品类型。
+
+    只改 kind，不动扩展表——把电子元器件改成家电时，原 值/封装 信息仍保留在
+    item_specs 里，改回 electronic 就能看到。不在这里清空，避免一次误操作把
+    手工录入的规格数据抹掉。
+    """
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get('ids')
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({'code': 400, 'message': '请先选择要修改的物品', 'data': None}), 400
+    if len(raw_ids) > 500:
+        return jsonify({'code': 400, 'message': '一次最多修改 500 项', 'data': None}), 400
+
+    try:
+        kind = _parse_kind(data.get('kind'))
+    except ValueError as exc:
+        return jsonify({'code': 400, 'message': str(exc), 'data': None}), 400
+
+    ids = []
+    for raw in raw_ids:
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            return jsonify({'code': 400, 'message': f'物品 ID 无效：{raw}', 'data': None}), 400
+
+    items = Item.query.filter(Item.id.in_(ids)).all()
+    if not items:
+        return jsonify({'code': 404, 'message': '选中的物品都不存在', 'data': None}), 404
+
+    changed = 0
+    for item in items:
+        if item.kind != kind:
+            item.kind = kind
+            changed += 1
+    db.session.commit()
+
+    return jsonify({
+        'code': 200,
+        'message': f'已将 {len(items)} 项设为{_kind_label(kind)}',
+        'data': {
+            'kind': kind,
+            'matched': len(items),
+            'changed': changed,
+            'missing': sorted(set(ids) - {item.id for item in items}),
+        },
     })
