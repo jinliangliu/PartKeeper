@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from models import db, Component, Category, Expense, Maintenance, Supplier, Location, Transaction
+from models import db, Item, ItemSpec, Category, Expense, Maintenance, Supplier, Location, Transaction
 from utils.decorators import login_required, admin_required
 from datetime import datetime
 
@@ -21,6 +21,19 @@ def _parse_date(value, field='日期'):
 
 def _date_out(value):
     return value.isoformat() if value else None
+
+
+def _parse_kind(value):
+    """物品类型：空值默认电子元器件，非法值抛 ValueError。
+
+    不静默归一到默认值——用户明确填了不存在的类型，应当告知而不是改写。
+    """
+    if value in (None, ''):
+        return 'electronic'
+    raw = str(value).strip().lower()
+    if raw not in Item.VALID_KINDS:
+        raise ValueError(f'物品类型无效，可选：{"、".join(Item.VALID_KINDS)}')
+    return raw
 
 
 def _float_or_none(value):
@@ -60,22 +73,24 @@ def get_components():
     keyword = request.args.get('keyword', '')
     category_id = request.args.get('category_id', type=int)
     
-    query = Component.query
-    
+    query = Item.query
+
     if keyword:
-        query = query.filter(
+        # value / package 已迁到 item_specs，走代理属性无法下推到 SQL，必须显式 join
+        like = f'%{keyword}%'
+        query = query.outerjoin(ItemSpec, ItemSpec.item_id == Item.id).filter(
             db.or_(
-                Component.name.like(f'%{keyword}%'),
-                Component.value.like(f'%{keyword}%'),
-                Component.package.like(f'%{keyword}%'),
-                Component.brand.like(f'%{keyword}%')
+                Item.name.like(like),
+                Item.brand.like(like),
+                ItemSpec.spec_value.like(like),
+                ItemSpec.spec_package.like(like),
             )
         )
     
     if category_id:
-        query = query.filter(Component.category_id == category_id)
+        query = query.filter(Item.category_id == category_id)
     
-    pagination = query.order_by(Component.id.desc()).paginate(
+    pagination = query.order_by(Item.id.desc()).paginate(
         page=page, per_page=per_page, error_out=False
     )
     
@@ -83,6 +98,7 @@ def get_components():
     for item in pagination.items:
         components.append({
             'id': item.id,
+            'kind': item.kind,
             'name': item.name,
             'value': item.value,
             'package': item.package,
@@ -112,8 +128,8 @@ def get_components():
 @components_bp.route('/low-stock', methods=['GET'])
 @login_required
 def get_low_stock():
-    components = Component.query.filter(
-        Component.current_stock <= Component.min_stock
+    components = Item.query.filter(
+        Item.current_stock <= Item.min_stock
     ).all()
     
     result = []
@@ -134,10 +150,10 @@ def get_low_stock():
         'data': result
     })
 
-@components_bp.route('/<int:component_id>', methods=['GET'])
+@components_bp.route('/<int:item_id>', methods=['GET'])
 @login_required
-def get_component(component_id):
-    component = Component.query.get(component_id)
+def get_component(item_id):
+    component = Item.query.get(item_id)
     if not component:
         return jsonify({'code': 404, 'message': '物料不存在', 'data': None}), 404
     
@@ -146,6 +162,7 @@ def get_component(component_id):
         'message': 'success',
         'data': {
             'id': component.id,
+            'kind': component.kind,
             'name': component.name,
             'value': component.value,
             'package': component.package,
@@ -173,10 +190,12 @@ def create_component():
     try:
         warranty_expiry = _parse_date(data.get('warranty_expiry'), '保修到期')
         last_maintenance = _parse_date(data.get('last_maintenance_date'), '上次维护日期')
+        kind = _parse_kind(data.get('kind'))
     except ValueError as exc:
         return jsonify({'code': 400, 'message': str(exc), 'data': None}), 400
 
-    component = Component(
+    component = Item(
+        kind=kind,
         name=data['name'],
         value=data.get('value'),
         package=data.get('package'),
@@ -205,10 +224,10 @@ def create_component():
         'data': {'id': component.id}
     }), 201
 
-@components_bp.route('/<int:component_id>', methods=['PUT'])
+@components_bp.route('/<int:item_id>', methods=['PUT'])
 @admin_required
-def update_component(component_id):
-    component = Component.query.get(component_id)
+def update_component(item_id):
+    component = Item.query.get(item_id)
     if not component:
         return jsonify({'code': 404, 'message': '物料不存在', 'data': None}), 404
     
@@ -233,6 +252,12 @@ def update_component(component_id):
         component.consumption_rate = _float_or_none(data['consumption_rate'])
     if 'maintenance_cycle_days' in data:
         component.maintenance_cycle_days = _int_or_none(data['maintenance_cycle_days'])
+
+    if 'kind' in data:
+        try:
+            component.kind = _parse_kind(data['kind'])
+        except ValueError as exc:
+            return jsonify({'code': 400, 'message': str(exc), 'data': None}), 400
 
     if 'name' in data:
         component.name = data['name']
@@ -265,15 +290,15 @@ def update_component(component_id):
         'data': None
     })
 
-@components_bp.route('/<int:component_id>', methods=['DELETE'])
+@components_bp.route('/<int:item_id>', methods=['DELETE'])
 @admin_required
-def delete_component(component_id):
-    component = Component.query.get(component_id)
+def delete_component(item_id):
+    component = Item.query.get(item_id)
     if not component:
         return jsonify({'code': 404, 'message': '物料不存在', 'data': None}), 404
 
     # 有出入库流水时不允许直接删：流水是历史凭证，删物料会让记录失去归属
-    txn_count = Transaction.query.filter_by(component_id=component_id).count()
+    txn_count = Transaction.query.filter_by(item_id=item_id).count()
     if txn_count:
         return jsonify({
             'code': 400,
@@ -283,9 +308,9 @@ def delete_component(component_id):
 
     # 维护记录随物品一起删除（脱离物品没有意义）；
     # 开支是真花掉的钱，保留但解除关联
-    Maintenance.query.filter_by(component_id=component_id).delete()
-    Expense.query.filter_by(component_id=component_id).update(
-        {'component_id': None}, synchronize_session=False
+    Maintenance.query.filter_by(item_id=item_id).delete()
+    Expense.query.filter_by(item_id=item_id).update(
+        {'item_id': None}, synchronize_session=False
     )
     db.session.expire(component)
     db.session.delete(component)

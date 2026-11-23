@@ -6,7 +6,7 @@
 from flask import Blueprint, jsonify, request
 from sqlalchemy import or_
 
-from models import Component, Maintenance, db
+from models import Item, Maintenance, db
 from services import maintenance_service
 from utils.decorators import login_required
 from utils.ledger import CHANNELS, MAINTENANCE_LABELS
@@ -38,13 +38,13 @@ def get_meta():
 def list_maintenances():
     page = max(1, request.args.get('page', 1, type=int))
     per_page = min(max(1, request.args.get('per_page', 20, type=int)), 200)
-    component_id = request.args.get('component_id', type=int)
+    item_id = request.args.get('item_id', type=int) or request.args.get('component_id', type=int)
     mtype = request.args.get('type', '').strip()
     keyword = request.args.get('keyword', '').strip()
 
     query = Maintenance.query
-    if component_id:
-        query = query.filter(Maintenance.component_id == component_id)
+    if item_id:
+        query = query.filter(Maintenance.item_id == item_id)
     if mtype in TYPE_KEYS:
         query = query.filter(Maintenance.type == mtype)
     start_dt = maintenance_service.parse_dt(request.args.get('start'))
@@ -81,12 +81,12 @@ def list_maintenances():
 def create_maintenance():
     body = request.get_json(silent=True) or {}
     try:
-        component_id = int(body.get('component_id'))
+        item_id = int(body.get('item_id') or body.get('component_id'))
     except (TypeError, ValueError):
-        return _err('component_id 必填且必须是整数')
-    component = db.session.get(Component, component_id)
+        return _err('item_id 必填且必须是整数')
+    component = db.session.get(Item, item_id)
     if not component:
-        return _err(f'物品 ID {component_id} 不存在', 404)
+        return _err(f'物品 ID {item_id} 不存在', 404)
 
     try:
         record, warnings = maintenance_service.create_record(
@@ -130,14 +130,14 @@ def delete_maintenance(maintenance_id):
     return _ok(payload, '已删除')
 
 
-@maintenances_bp.route('/ledger/<int:component_id>', methods=['GET'])
+@maintenances_bp.route('/ledger/<int:item_id>', methods=['GET'])
 @login_required
-def get_component_ledger(component_id):
+def get_component_ledger(item_id):
     """单个物品的持有账本：花过多少钱、修过几次、保修还剩多久、年均成本。
 
     购置与维修金额同源于 expenses，不会重复计算；没有登记过开支的物品只显示维护次数。
     """
-    component = db.session.get(Component, component_id)
+    component = db.session.get(Item, item_id)
     if not component:
-        return _err(f'物品 ID {component_id} 不存在', 404)
+        return _err(f'物品 ID {item_id} 不存在', 404)
     return _ok(maintenance_service.build_ledger(component))

@@ -26,7 +26,7 @@ def stock_in():
     data = request.get_json() or {}
     try:
         tx = post_stock_movement(
-            component_id=data.get('component_id'),
+            item_id=data.get('item_id') or data.get('component_id'),
             movement_type='in',
             quantity=data.get('quantity'),
             operator_id=request.current_user.get('user_id'),
@@ -44,7 +44,7 @@ def stock_out():
     data = request.get_json() or {}
     try:
         tx = post_stock_movement(
-            component_id=data.get('component_id'),
+            item_id=data.get('item_id') or data.get('component_id'),
             movement_type='out',
             quantity=data.get('quantity'),
             operator_id=request.current_user.get('user_id'),
@@ -72,14 +72,15 @@ def stock_out_batch():
 def get_transactions():
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
-    component_id = request.args.get('component_id', type=int)
+    # component_id 为旧字段名，保留兼容；新代码统一用 item_id
+    item_id = request.args.get('item_id', type=int) or request.args.get('component_id', type=int)
     operator_id = request.args.get('operator_id', type=int)
     tx_type = request.args.get('type')
     start = _parse_date(request.args.get('start'))
     end = _parse_date(request.args.get('end'), end_of_day=True)
 
     data = list_transactions(
-        component_id=component_id,
+        item_id=item_id,
         operator_id=operator_id,
         tx_type=tx_type,
         start=start,

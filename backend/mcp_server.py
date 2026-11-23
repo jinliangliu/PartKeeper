@@ -200,6 +200,7 @@ def _store_receipt(expense_id, raw_path):
 def _component_dict(c):
     d = {
         'id': c.id,
+        'kind': c.kind,
         'name': c.name,
         'value': c.value,
         'package': c.package,
@@ -233,23 +234,24 @@ def _component_dict(c):
 def list_components(keyword: str = '', category: str = '', only_low_stock: bool = False,
                     limit: int = 50) -> dict:
     """查询物料列表。可按名称/参数值/封装/品牌关键词模糊搜索，按分类名过滤，或只看低库存。"""
-    from models import Component, Category
+    from models import Item, ItemSpec, Category
     with _app().app_context():
-        query = Component.query
+        query = Item.query
         if keyword:
             from sqlalchemy import or_
             kw = f'%{keyword}%'
-            query = query.filter(or_(
-                Component.name.like(kw), Component.value.like(kw),
-                Component.package.like(kw), Component.brand.like(kw),
+            # value/package 在 item_specs 扩展表，必须显式 join 才能下推到 SQL
+            query = query.outerjoin(ItemSpec, ItemSpec.item_id == Item.id).filter(or_(
+                Item.name.like(kw), Item.brand.like(kw),
+                ItemSpec.spec_value.like(kw), ItemSpec.spec_package.like(kw),
             ))
         if category:
             cat = Category.query.filter(Category.name.like(f'%{category}%')).first()
             if cat:
-                query = query.filter(Component.category_id == cat.id)
+                query = query.filter(Item.category_id == cat.id)
             else:
                 return {'total': 0, 'items': [], 'note': f'未找到分类：{category}'}
-        items = query.order_by(Component.id.desc()).limit(max(1, min(limit, 200))).all()
+        items = query.order_by(Item.id.desc()).limit(max(1, min(limit, 200))).all()
         data = [_component_dict(c) for c in items]
         if only_low_stock:
             data = [d for d in data if d['low_stock']]
@@ -257,13 +259,13 @@ def list_components(keyword: str = '', category: str = '', only_low_stock: bool 
 
 
 @mcp.tool()
-def get_component(component_id: int) -> dict:
+def get_component(item_id: int) -> dict:
     """按 ID 查询单个物料的完整详情。"""
-    from models import Component
+    from models import Item
     with _app().app_context():
-        c = Component.query.get(component_id)
+        c = Item.query.get(item_id)
         if not c:
-            return {'error': f'物料 ID {component_id} 不存在'}
+            return {'error': f'物料 ID {item_id} 不存在'}
         return _component_dict(c)
 
 
@@ -274,15 +276,25 @@ def create_component(name: str, value: str = '', package: str = '', tolerance: s
                      location: str = '', supplier: str = '', is_consumable: bool = False,
                      consumption_rate: float | None = None, warranty_expiry: str = '',
                      maintenance_cycle_days: int | None = None,
-                     last_maintenance_date: str = '') -> dict:
-    """新建物料档案。name 必填；category/location/supplier 传名称即可自动关联（也可留空）。
+                     last_maintenance_date: str = '', kind: str = 'electronic') -> dict:
+    """新建物品档案（电子元器件、家电、家具、车辆等通用）。name 必填；
+    category/location/supplier 传名称即可自动关联（也可留空）。
+
+    kind 为物品类型：electronic（电子元器件，默认）/appliance（家电）/furniture（家具）/
+    vehicle（车辆）/other（其他）。value/package/tolerance/datasheet_url 仅电子元器件有意义，
+    其他类型留空即可。
+
     家庭属性可选：is_consumable 标记消耗品；consumption_rate 消耗速率（单位/天，留空自动推算）；
     warranty_expiry / last_maintenance_date 传 YYYY-MM-DD，maintenance_cycle_days 为维护周期天数。
-    关联名称找不到时不会阻断建档，会在 warnings 中说明。返回新物料 ID 与完整信息。"""
-    from models import db, Component, Category, Location, Supplier
+    关联名称找不到时不会阻断建档，会在 warnings 中说明。返回新物品 ID 与完整信息。"""
+    from models import db, Item, Category, Location, Supplier
     name = (name or '').strip()
     if not name:
-        return {'error': '物料名称不能为空'}
+        return {'error': '物品名称不能为空'}
+
+    kind_key = str(kind or 'electronic').strip().lower()
+    if kind_key not in Item.VALID_KINDS:
+        return {'error': f'物品类型无效：{kind}，可选 {"/".join(Item.VALID_KINDS)}'}
 
     def _parse_date(text, label, warnings):
         if not text:
@@ -309,7 +321,8 @@ def create_component(name: str, value: str = '', package: str = '', tolerance: s
         loc = resolve(Location, location, '库位')
         sup = resolve(Supplier, supplier, '供应商')
 
-        component = Component(
+        component = Item(
+            kind=kind_key,
             name=name,
             value=value or None,
             package=package or None,
@@ -343,11 +356,11 @@ def create_component(name: str, value: str = '', package: str = '', tolerance: s
 @mcp.tool()
 def list_low_stock() -> dict:
     """列出全部低库存物料（当前库存 <= 最低库存阈值），用于采购预警。"""
-    from models import Component
+    from models import Item
     with _app().app_context():
-        items = Component.query.filter(
-            Component.current_stock <= Component.min_stock
-        ).order_by(Component.current_stock.asc()).all()
+        items = Item.query.filter(
+            Item.current_stock <= Item.min_stock
+        ).order_by(Item.current_stock.asc()).all()
         return {
             'total': len(items),
             'items': [
@@ -371,7 +384,7 @@ def get_replenishment_suggestions(days_ahead: int = 30, lookback_days: int = 90,
     days_ahead 为关注的时间窗（默认 30 天）：仅返回预计在窗口内耗尽的物品。"""
     from datetime import timedelta
     from sqlalchemy import func
-    from models import db, Component, Transaction
+    from models import db, Item, Transaction
     days_ahead = max(1, min(int(days_ahead), 365))
     lookback_days = max(7, min(int(lookback_days), 730))
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
@@ -379,15 +392,15 @@ def get_replenishment_suggestions(days_ahead: int = 30, lookback_days: int = 90,
     with _app().app_context():
         # 一次性聚合窗口内各物品的出库总量，避免 N+1 查询
         out_rows = (
-            db.session.query(Transaction.component_id, func.coalesce(func.sum(Transaction.quantity), 0))
+            db.session.query(Transaction.item_id, func.coalesce(func.sum(Transaction.quantity), 0))
             .filter(Transaction.type == 'out', Transaction.created_at >= cutoff)
-            .group_by(Transaction.component_id).all()
+            .group_by(Transaction.item_id).all()
         )
         out_by_id = {cid: float(qty or 0) for cid, qty in out_rows}
 
-        query = Component.query
+        query = Item.query
         if not include_non_consumables:
-            query = query.filter(Component.is_consumable.is_(True))
+            query = query.filter(Item.is_consumable.is_(True))
 
         alerts = []
         tracked = 0
@@ -436,14 +449,14 @@ def list_expiring_warranties(days_ahead: int = 30) -> dict:
     """扫描即将到期的保修与维护计划。保修看 warranty_expiry；维护看上次维护日 + 维护周期。
     days_ahead 为提前预警天数（默认 30）；已过期的单独归为 overdue。"""
     from datetime import timedelta
-    from models import Component
+    from models import Item
     days_ahead = max(0, min(int(days_ahead), 365))
     today = datetime.utcnow().date()
 
     with _app().app_context():
         warranties = []
         maintenances = []
-        for c in Component.query.all():
+        for c in Item.query.all():
             base = {'id': c.id, 'name': c.name, 'location': c.location.name if c.location else None}
             if c.warranty_expiry:
                 delta = (c.warranty_expiry - today).days
@@ -731,23 +744,23 @@ def _normalize_expense_category(value):
 
 
 def _resolve_component_ref(raw):
-    """解析对话传入的物品引用，返回 (component_id 或 None, 错误说明或 None)。
+    """解析对话传入的物品引用，返回 (item_id 或 None, 错误说明或 None)。
 
     接受物品 ID（int 或纯数字字符串），也接受名称精确匹配——用户在对话里更像
     会说「吸尘器」而不是报 ID。重名时要求改用 ID，避免挂错物品。
     """
-    from models import Component, db
+    from models import Item, db
     if raw in (None, '', 0, '0'):
         return None, None
     text = str(raw).strip()
     if text.isdigit():
-        component = db.session.get(Component, int(text))
+        component = db.session.get(Item, int(text))
         if not component:
             return None, f'物品 ID {text} 不存在'
         return component.id, None
-    matches = Component.query.filter(Component.name == text).limit(2).all()
+    matches = Item.query.filter(Item.name == text).limit(2).all()
     if not matches:
-        matches = Component.query.filter(Component.name.ilike(f'%{text}%')).limit(2).all()
+        matches = Item.query.filter(Item.name.ilike(f'%{text}%')).limit(2).all()
     if not matches:
         return None, f'未找到名为「{text}」的物品'
     if len(matches) > 1:
@@ -819,8 +832,8 @@ def _expense_dict(e, attachments=None):
         'tags': [t for t in (e.tags or '').split(',') if t],
         'currency': e.currency or 'CNY',
         'source': e.source,
-        'component_id': e.component_id,
-        'component_name': e.component.name if e.component else None,
+        'item_id': e.item_id,
+        'item_name': e.item.name if e.item else None,
     }
     if attachments is not None:
         d['attachments'] = attachments
@@ -846,7 +859,7 @@ def record_expenses(expenses: list[dict]) -> dict:
       external_id（该渠道交易单号，可选；填了可跨截图可靠去重）、
       note（备注，可选）、tags（标签，列表或逗号分隔字符串，可选）、
       source（录入来源，默认 manual；截图录入可填 screenshot）、
-      component_id（可选，关联物品：填物品 ID 或物品名称，如「吸尘器」。买了家电、
+      item_id（可选，关联物品：填物品 ID 或物品名称，如「吸尘器」。买了家电、
         家具、数码产品时建议填上，之后用 get_component_ledger 就能看到这台机器总共花了多少）、
       receipt_path（凭证图片路径，可选；文件已存在于磁盘时登记其 SHA-256 与大小，
         不存在只记 warning 不阻断录入。文件上传接口尚未提供，路径需指向已有文件）。
@@ -896,7 +909,7 @@ def record_expenses(expenses: list[dict]) -> dict:
             channel = _normalize_channel(item.get('channel'), Expense.VALID_CHANNELS)
             external_id = str(item.get('external_id') or '').strip() or None
             merchant = str(item.get('merchant') or '').strip() or None
-            component_id, comp_error = _resolve_component_ref(item.get('component_id'))
+            item_id, comp_error = _resolve_component_ref(item.get('item_id'))
             if comp_error:
                 failed.append({'index': idx, 'reason': comp_error})
                 continue
@@ -928,7 +941,7 @@ def record_expenses(expenses: list[dict]) -> dict:
                 currency=str(item.get('currency') or 'CNY').strip().upper()[:8],
                 source=str(item.get('source') or 'manual').strip(),
                 dedup_key=key,
-                component_id=component_id,
+                item_id=item_id,
             )
             db.session.add(expense)
             db.session.flush()  # 先拿到 id，便于挂凭证
@@ -1001,13 +1014,13 @@ def attach_expense_receipt(expense_id: int, file_path: str) -> dict:
 @mcp.tool()
 def list_expenses(category: str = '', subcategory: str = '', merchant: str = '',
                   channel: str = '', start: str = '', end: str = '',
-                  keyword: str = '', component_id: str = '', limit: int = 100) -> dict:
+                  keyword: str = '', item_id: str = '', limit: int = 100) -> dict:
     """查询家庭开支明细。
 
     category 可填中文或英文类型名；subcategory/merchant 为模糊匹配；
     channel 可填 alipay/wechat/bank/cash/other；start/end 为 YYYY-MM-DD；
     keyword 在备注、商户、子类、标签中模糊搜索。
-    component_id 填物品 ID 或名称，只看挂在某个物品上的开支（如「吸尘器花了多少」）。
+    item_id 填物品 ID 或名称，只看挂在某个物品上的开支（如「吸尘器花了多少」）。
     每条记录附带已登记的凭证附件（路径/哈希/大小/MIME）与关联物品。
     """
     from sqlalchemy import or_
@@ -1018,11 +1031,11 @@ def list_expenses(category: str = '', subcategory: str = '', merchant: str = '',
 
     with _app().app_context():
         query = Expense.query
-        if component_id:
-            ref_id, ref_error = _resolve_component_ref(component_id)
+        if item_id:
+            ref_id, ref_error = _resolve_component_ref(item_id)
             if ref_error:
                 return {'error': ref_error}
-            query = query.filter(Expense.component_id == ref_id)
+            query = query.filter(Expense.item_id == ref_id)
         if category_key:
             query = query.filter(Expense.category == category_key)
         if subcategory:
@@ -1233,12 +1246,12 @@ def get_household_spend_overview(months: int = 6) -> dict:
 
 
 @mcp.tool()
-def record_maintenance(component_id: str, title: str, performed_at: str = '',
+def record_maintenance(item_id: str, title: str, performed_at: str = '',
                        type: str = '', vendor: str = '', cost: float = 0,
                        channel: str = '', note: str = '') -> dict:
     """记录一次物品维护（清洁保养 / 维修 / 更换耗材 / 巡检）。
 
-    component_id 填物品 ID 或名称（如「吸尘器」）；
+    item_id 填物品 ID 或名称（如「吸尘器」）；
     title 说明做了什么（如「更换 HEPA 滤芯」「清洗冷凝器」「主板维修」）；
     performed_at 为 YYYY-MM-DD，留空则记为今天；
     type 可选 cleaning/repair/replacement/inspection/other，
@@ -1250,15 +1263,15 @@ def record_maintenance(component_id: str, title: str, performed_at: str = '',
     记录后会自动把该物品的「上次维护日期」推到本次，维护提醒随之顺延。
     查某件东西总共花了多少、修过几次，用 get_component_ledger。
     """
-    from models import Component, db
+    from models import Item, db
     from services import maintenance_service
     with _app().app_context():
-        ref_id, ref_error = _resolve_component_ref(component_id)
+        ref_id, ref_error = _resolve_component_ref(item_id)
         if ref_error:
             return {'error': ref_error}
         if not ref_id:
             return {'error': '请提供物品 ID 或名称'}
-        component = db.session.get(Component, ref_id)
+        component = db.session.get(Item, ref_id)
         if not component:
             return {'error': f'物品 ID {ref_id} 不存在'}
         try:
@@ -1285,11 +1298,11 @@ def record_maintenance(component_id: str, title: str, performed_at: str = '',
 
 
 @mcp.tool()
-def list_maintenances(component_id: str = '', type: str = '', start: str = '',
+def list_maintenances(item_id: str = '', type: str = '', start: str = '',
                       end: str = '', keyword: str = '', limit: int = 100) -> dict:
     """查询维护记录。
 
-    component_id 可填物品 ID 或名称，只看某个物品的维护历史；
+    item_id 可填物品 ID 或名称，只看某个物品的维护历史；
     type 可选 cleaning/repair/replacement/inspection/other（也接受中文）；
     start/end 为 YYYY-MM-DD；keyword 在维护内容、服务商、备注中模糊搜索。
     """
@@ -1297,11 +1310,11 @@ def list_maintenances(component_id: str = '', type: str = '', start: str = '',
     from utils.ledger import MAINTENANCE_LABELS
     with _app().app_context():
         query = Maintenance.query
-        if component_id:
-            ref_id, ref_error = _resolve_component_ref(component_id)
+        if item_id:
+            ref_id, ref_error = _resolve_component_ref(item_id)
             if ref_error:
                 return {'error': ref_error}
-            query = query.filter(Maintenance.component_id == ref_id)
+            query = query.filter(Maintenance.item_id == ref_id)
         if type:
             want = _MAINTENANCE_ALIASES.get(type.strip(), type.strip().lower())
             query = query.filter(Maintenance.type == want)
@@ -1342,22 +1355,22 @@ def list_maintenances(component_id: str = '', type: str = '', start: str = '',
 
 
 @mcp.tool()
-def get_component_ledger(component_id: str) -> dict:
+def get_component_ledger(item_id: str) -> dict:
     """查看某个物品的持有账本：买它花了多少、修它花了多少、修过几次、年均成本、保修还剩多久。
 
-    component_id 可填物品 ID 或名称。购置成本取该物品名下非维修类开支，
+    item_id 可填物品 ID 或名称。购置成本取该物品名下非维修类开支，
     维修成本取维修类开支，两者同源于开支表，不会重复计算。
     没有登记过开支的物品只会显示维护次数与保修状态。
     """
-    from models import Component, db
+    from models import Item, db
     from services.maintenance_service import build_ledger
     with _app().app_context():
-        ref_id, ref_error = _resolve_component_ref(component_id)
+        ref_id, ref_error = _resolve_component_ref(item_id)
         if ref_error:
             return {'error': ref_error}
         if not ref_id:
             return {'error': '请提供物品 ID 或名称'}
-        component = db.session.get(Component, ref_id)
+        component = db.session.get(Item, ref_id)
         if not component:
             return {'error': f'物品 ID {ref_id} 不存在'}
         return build_ledger(component)
@@ -1403,7 +1416,7 @@ def list_locations() -> list:
 
 
 @mcp.tool()
-def list_transactions(component_id: int | None = None, tx_type: str = '',
+def list_transactions(item_id: int | None = None, tx_type: str = '',
                       start: str = '', end: str = '', limit: int = 50) -> dict:
     """查询库存流水。tx_type 为 'in'(入库) / 'out'(出库)；start/end 为 YYYY-MM-DD。"""
     from services.transaction_service import list_transactions as svc_list
@@ -1411,7 +1424,7 @@ def list_transactions(component_id: int | None = None, tx_type: str = '',
     end_dt = datetime.strptime(end, '%Y-%m-%d').replace(hour=23, minute=59, second=59) if end else None
     with _app().app_context():
         return svc_list(
-            component_id=component_id,
+            item_id=item_id,
             tx_type=tx_type if tx_type in ('in', 'out') else None,
             start=start_dt, end=end_dt, page=1, per_page=max(1, min(limit, 200)),
         )
@@ -1458,7 +1471,7 @@ def get_monthly_trend(months: int = 12) -> list:
 
 
 @mcp.tool()
-def stock_in(component_id: int, quantity: int, unit_price: float | None = None,
+def stock_in(item_id: int, quantity: int, unit_price: float | None = None,
              note: str = '') -> dict:
     """对物料执行入库（增加库存并记录流水）。unit_price 为采购单价（元），可选。"""
     from services.transaction_service import post_stock_movement, StockError
@@ -1466,7 +1479,7 @@ def stock_in(component_id: int, quantity: int, unit_price: float | None = None,
     try:
         with _app().app_context():
             return post_stock_movement(
-                component_id=component_id, movement_type='in', quantity=quantity,
+                item_id=item_id, movement_type='in', quantity=quantity,
                 operator_id=operator_id, note=note, unit_price=unit_price,
             )
     except StockError as exc:
@@ -1474,14 +1487,14 @@ def stock_in(component_id: int, quantity: int, unit_price: float | None = None,
 
 
 @mcp.tool()
-def stock_out(component_id: int, quantity: int, note: str = '') -> dict:
+def stock_out(item_id: int, quantity: int, note: str = '') -> dict:
     """对物料执行出库（扣减库存并记录流水），库存不足时返回错误。"""
     from services.transaction_service import post_stock_movement, StockError
     operator_id = int(os.getenv('MCP_OPERATOR_ID', '1'))
     try:
         with _app().app_context():
             return post_stock_movement(
-                component_id=component_id, movement_type='out', quantity=quantity,
+                item_id=item_id, movement_type='out', quantity=quantity,
                 operator_id=operator_id, note=note,
             )
     except StockError as exc:

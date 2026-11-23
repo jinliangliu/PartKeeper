@@ -2,7 +2,7 @@
   <div class="page-card">
     <div class="toolbar">
       <el-select
-        v-model="query.component_id"
+        v-model="query.item_id"
         filterable
         remote
         clearable
@@ -36,7 +36,7 @@
       <el-table-column prop="created_at" label="时间" width="180">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column prop="component_name" label="物料" min-width="150" />
+      <el-table-column prop="item_name" label="物料" min-width="150" />
       <el-table-column label="类型" width="90" align="center">
         <template #default="{ row }">
           <el-tag :type="row.type === 'in' ? 'success' : 'danger'">
@@ -85,7 +85,7 @@ const items = ref([])
 const total = ref(0)
 const componentOptions = ref([])
 const dateRange = ref([])
-const query = reactive({ page: 1, per_page: 20, component_id: null, type: null, start: '', end: '' })
+const query = reactive({ page: 1, per_page: 20, item_id: null, type: null, start: '', end: '' })
 
 function formatTime(value) {
   return value ? value.replace('T', ' ').slice(0, 19) : ''
@@ -108,7 +108,7 @@ async function load() {
   loading.value = true
   try {
     const params = { page: query.page, per_page: query.per_page }
-    if (query.component_id) params.component_id = query.component_id
+    if (query.item_id) params.item_id = query.item_id
     if (query.type) params.type = query.type
     if (dateRange.value?.[0]) params.start = dateRange.value[0]
     if (dateRange.value?.[1]) params.end = dateRange.value[1]

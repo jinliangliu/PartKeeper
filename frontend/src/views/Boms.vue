@@ -158,8 +158,8 @@ async function openEdit(row) {
   form.name = data.name
   form.description = data.description || ''
   form.items = data.items.map((it) => ({
-    component_id: it.component_id,
-    label: componentLabel({ name: it.component_name, value: it.value, package: it.package }),
+    item_id: it.item_id,
+    label: componentLabel({ name: it.item_name, value: it.value, package: it.package }),
     current_stock: it.current_stock,
     unit: it.unit,
     quantity: it.quantity
@@ -177,12 +177,12 @@ function addItem() {
   }
   const opt = componentOptions.value.find((c) => c.id === newComponentId.value)
   if (!opt) return
-  if (form.items.some((it) => it.component_id === opt.id)) {
+  if (form.items.some((it) => it.item_id === opt.id)) {
     ElMessage.warning('该物料已在列表中')
     return
   }
   form.items.push({
-    component_id: opt.id,
+    item_id: opt.id,
     label: opt.label,
     current_stock: opt.current_stock,
     unit: opt.unit,
@@ -201,7 +201,7 @@ async function save() {
     ElMessage.warning('请输入 BOM 名称')
     return
   }
-  const items = form.items.map((it) => ({ component_id: it.component_id, quantity: it.quantity }))
+  const items = form.items.map((it) => ({ item_id: it.item_id, quantity: it.quantity }))
   saving.value = true
   try {
     if (editingId.value) {

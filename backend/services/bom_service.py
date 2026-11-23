@@ -3,7 +3,7 @@
 import csv
 import io
 
-from models import db, Component
+from models import db, Item
 
 
 # 常见 EDA 工具导出的 BOM 表头别名（不区分大小写）
@@ -58,7 +58,7 @@ def _match_component(value, package):
     target_package = package.strip().casefold() if package else None
 
     candidates = [
-        c for c in Component.query.all()
+        c for c in Item.query.all()
         if (c.value or '').strip().casefold() == target_value
     ]
     if not candidates:
@@ -145,7 +145,7 @@ def create_missing_components(raw: bytes):
         if line['matched_id']:
             continue
         name = line['name'] or line['value']
-        component = Component(
+        component = Item(
             name=(name or '')[:100],
             value=line['value'][:50],
             package=(line['package'] or None)[:30] if line['package'] else None,

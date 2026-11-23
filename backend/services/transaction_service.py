@@ -1,6 +1,6 @@
 """库存过账业务逻辑：入库 / 出库。"""
 
-from models import db, Component, Transaction
+from models import db, Item, Transaction
 
 
 class StockError(Exception):
@@ -10,8 +10,8 @@ class StockError(Exception):
 def _serialize_transaction(tx):
     return {
         'id': tx.id,
-        'component_id': tx.component_id,
-        'component_name': tx.component.name if tx.component else None,
+        'item_id': tx.item_id,
+        'item_name': tx.item.name if tx.item else None,
         'type': tx.type,
         'quantity': tx.quantity,
         'unit_price': tx.unit_price,
@@ -22,7 +22,7 @@ def _serialize_transaction(tx):
     }
 
 
-def post_stock_movement(component_id, movement_type, quantity, operator_id, note='', unit_price=None):
+def post_stock_movement(item_id, movement_type, quantity, operator_id, note='', unit_price=None):
     """对物料执行一次入库或出库，并在同一事务中更新库存、记录流水。
 
     返回序列化后的流水记录；校验失败时抛出 StockError。
@@ -45,7 +45,7 @@ def post_stock_movement(component_id, movement_type, quantity, operator_id, note
         if movement_type != 'in':
             unit_price = None
 
-    component = db.session.get(Component, component_id)
+    component = db.session.get(Item, item_id)
     if not component:
         raise StockError('物料不存在')
 
@@ -57,7 +57,7 @@ def post_stock_movement(component_id, movement_type, quantity, operator_id, note
         component.current_stock -= quantity
 
     tx = Transaction(
-        component_id=component_id,
+        item_id=item_id,
         type=movement_type,
         quantity=quantity,
         unit_price=unit_price if movement_type == 'in' else None,
@@ -70,12 +70,12 @@ def post_stock_movement(component_id, movement_type, quantity, operator_id, note
     return _serialize_transaction(tx)
 
 
-def list_transactions(component_id=None, operator_id=None, tx_type=None,
+def list_transactions(item_id=None, operator_id=None, tx_type=None,
                       start=None, end=None, page=1, per_page=20):
     query = Transaction.query
 
-    if component_id:
-        query = query.filter(Transaction.component_id == component_id)
+    if item_id:
+        query = query.filter(Transaction.item_id == item_id)
     if operator_id:
         query = query.filter(Transaction.operator_id == operator_id)
     if tx_type in ('in', 'out'):
@@ -103,11 +103,11 @@ def post_batch_out(items, operator_id):
 
     transactions = []
     for item in items:
-        component_id = item.get('component_id')
+        item_id = item.get('item_id')
         quantity = item.get('quantity')
         note = item.get('note')
 
-        component = db.session.get(Component, component_id)
+        component = db.session.get(Item, item_id)
         if not component:
             raise StockError('存在不存在的物料')
         if quantity is None or isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
@@ -120,7 +120,7 @@ def post_batch_out(items, operator_id):
 
         component.current_stock -= quantity
         tx = Transaction(
-            component_id=component_id,
+            item_id=item_id,
             type='out',
             quantity=quantity,
             operator_id=operator_id,

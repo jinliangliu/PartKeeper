@@ -83,7 +83,7 @@ def delete_supplier(supplier_id):
     supplier = db.session.get(Supplier, supplier_id)
     if not supplier:
         return jsonify({'code': 404, 'message': '供应商不存在', 'data': None}), 404
-    if supplier.components:
+    if supplier.items:
         return jsonify({'code': 400, 'message': '该供应商已被物料引用，无法删除', 'data': None}), 400
 
     db.session.delete(supplier)

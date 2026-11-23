@@ -15,11 +15,16 @@
       <el-button type="primary" @click="load">查询</el-button>
       <div class="spacer" />
       <el-button v-if="authStore.isAdmin" @click="openBom">BOM 导入</el-button>
-      <el-button v-if="authStore.isAdmin" type="success" @click="openCreate">新增物料</el-button>
+      <el-button v-if="authStore.isAdmin" type="success" @click="openCreate">新增物品</el-button>
     </div>
 
     <el-table :data="items" v-loading="loading" border stripe>
       <el-table-column prop="id" label="ID" width="60" />
+      <el-table-column label="类型" width="96" align="center">
+        <template #default="{ row }">
+          <el-tag size="small" effect="plain">{{ kindLabel(row.kind) }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="name" label="名称" min-width="120" />
       <el-table-column prop="value" label="值" min-width="90" />
       <el-table-column prop="package" label="封装" width="90" />
@@ -74,21 +79,30 @@
       />
     </div>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑物料' : '新增物料'" width="720px">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑物品' : '新增物品'" width="720px">
       <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
         <el-row :gutter="12">
           <el-col :span="12">
             <el-form-item label="名称" prop="name"><el-input v-model="form.name" /></el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="值"><el-input v-model="form.value" /></el-form-item>
+            <el-form-item label="类型">
+              <el-select v-model="form.kind" style="width: 100%">
+                <el-option v-for="k in KIND_OPTIONS" :key="k.value" :label="k.label" :value="k.value" />
+              </el-select>
+            </el-form-item>
           </el-col>
-          <el-col :span="12">
-            <el-form-item label="封装"><el-input v-model="form.package" /></el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="精度"><el-input v-model="form.tolerance" /></el-form-item>
-          </el-col>
+          <template v-if="form.kind === 'electronic'">
+            <el-col :span="12">
+              <el-form-item label="值"><el-input v-model="form.value" /></el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="封装"><el-input v-model="form.package" /></el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="精度"><el-input v-model="form.tolerance" /></el-form-item>
+            </el-col>
+          </template>
           <el-col :span="12">
             <el-form-item label="品牌"><el-input v-model="form.brand" /></el-form-item>
           </el-col>
@@ -128,7 +142,7 @@
               <el-input-number v-model="form.current_stock" :min="0" style="width: 100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="24">
+          <el-col v-if="form.kind === 'electronic'" :span="24">
             <el-form-item label="Datasheet">
               <el-input v-model="form.datasheet_url" placeholder="数据手册链接" />
             </el-form-item>
@@ -393,7 +407,18 @@ const query = reactive({ page: 1, per_page: 20, keyword: '', category_id: null }
 const dialogVisible = ref(false)
 const editingId = ref(null)
 const formRef = ref()
+const KIND_OPTIONS = [
+  { value: 'electronic', label: '电子元器件' },
+  { value: 'appliance', label: '家电' },
+  { value: 'furniture', label: '家具' },
+  { value: 'vehicle', label: '车辆' },
+  { value: 'other', label: '其他' }
+]
+
+const kindLabel = (k) => KIND_OPTIONS.find((o) => o.value === k)?.label || k || '—'
+
 const form = reactive({
+  kind: 'electronic',
   name: '', value: '', package: '', tolerance: '', brand: '', unit: '个',
   category_id: null, location_id: null, supplier_id: null,
   min_stock: 0, current_stock: 0, datasheet_url: '',
@@ -481,6 +506,7 @@ async function load() {
 
 function resetForm() {
   Object.assign(form, {
+    kind: 'electronic',
     name: '', value: '', package: '', tolerance: '', brand: '', unit: '个',
     category_id: null, location_id: null, supplier_id: null,
     min_stock: 0, current_stock: 0, datasheet_url: '',
@@ -498,6 +524,7 @@ function openCreate() {
 async function openEdit(id) {
   const res = await http.get(`/components/${id}`)
   Object.assign(form, res.data)
+  form.kind = res.data.kind || 'electronic'
   editingId.value = id
   dialogVisible.value = true
 }
@@ -582,7 +609,7 @@ async function submitMaintenance() {
   maintSaving.value = true
   try {
     const res = await http.post('/maintenances', {
-      component_id: maintTarget.value.id,
+      item_id: maintTarget.value.id,
       type: maintForm.type,
       title: maintForm.title,
       performed_at: maintForm.performed_at || today(),

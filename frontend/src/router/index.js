@@ -14,7 +14,7 @@ const routes = [
     redirect: '/dashboard',
     children: [
       { path: 'dashboard', name: 'dashboard', component: () => import('../views/Dashboard.vue'), meta: { title: '仪表盘' } },
-      { path: 'components', name: 'components', component: () => import('../views/Components.vue'), meta: { title: '物料管理' } },
+      { path: 'components', name: 'components', component: () => import('../views/Components.vue'), meta: { title: '物品管理' } },
       { path: 'categories', name: 'categories', component: () => import('../views/Categories.vue'), meta: { title: '分类管理' } },
       { path: 'suppliers', name: 'suppliers', component: () => import('../views/Suppliers.vue'), meta: { title: '供应商管理' } },
       { path: 'locations', name: 'locations', component: () => import('../views/Locations.vue'), meta: { title: '库位管理' } },

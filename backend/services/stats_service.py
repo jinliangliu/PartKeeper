@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import func
 
-from models import db, Component, Transaction, Supplier, Category
+from models import db, Item, ItemSpec, Transaction, Supplier, Category
 
 
 def _round(value, ndigits=2):
@@ -20,21 +20,21 @@ def _range_filter(query, start=None, end=None):
 
 
 def _component_avg_prices():
-    """返回 {component_id: 平均采购单价}（全时段，用于估算库存/消耗金额）。"""
+    """返回 {item_id: 平均采购单价}（全时段，用于估算库存/消耗金额）。"""
     rows = (
         db.session.query(
-            Transaction.component_id,
+            Transaction.item_id,
             func.coalesce(func.sum(Transaction.quantity * Transaction.unit_price), 0.0),
             func.coalesce(func.sum(Transaction.quantity), 0),
         )
         .filter(Transaction.type == 'in', Transaction.unit_price.isnot(None))
-        .group_by(Transaction.component_id)
+        .group_by(Transaction.item_id)
         .all()
     )
     result = {}
-    for component_id, cost, qty in rows:
+    for item_id, cost, qty in rows:
         if qty:
-            result[component_id] = float(cost) / float(qty)
+            result[item_id] = float(cost) / float(qty)
     return result
 
 
@@ -55,17 +55,17 @@ def overview(start=None, end=None):
         start, end,
     ).scalar()
 
-    total_components = Component.query.count()
+    total_components = Item.query.count()
     supplier_count = Supplier.query.count()
     category_count = Category.query.count()
-    low_stock_count = Component.query.filter(
-        Component.current_stock <= Component.min_stock
+    low_stock_count = Item.query.filter(
+        Item.current_stock <= Item.min_stock
     ).count()
-    inventory_qty = db.session.query(func.coalesce(func.sum(Component.current_stock), 0)).scalar()
+    inventory_qty = db.session.query(func.coalesce(func.sum(Item.current_stock), 0)).scalar()
 
     avg_prices = _component_avg_prices()
     inventory_value = 0.0
-    for component in Component.query.all():
+    for component in Item.query.all():
         price = avg_prices.get(component.id)
         if price:
             inventory_value += (component.current_stock or 0) * price
@@ -96,8 +96,8 @@ def purchases_by(group='component', limit=10, start=None, end=None):
                 func.coalesce(func.sum(Transaction.quantity * Transaction.unit_price), 0.0),
             )
             .select_from(Transaction)
-            .join(Component, Transaction.component_id == Component.id)
-            .outerjoin(Supplier, Component.supplier_id == Supplier.id)
+            .join(Item, Transaction.item_id == Item.id)
+            .outerjoin(Supplier, Item.supplier_id == Supplier.id)
             .filter(Transaction.type == 'in')
             .group_by(Supplier.id, Supplier.name)
             .order_by(func.sum(Transaction.quantity * Transaction.unit_price).desc())
@@ -118,8 +118,8 @@ def purchases_by(group='component', limit=10, start=None, end=None):
                 func.coalesce(func.sum(Transaction.quantity * Transaction.unit_price), 0.0),
             )
             .select_from(Transaction)
-            .join(Component, Transaction.component_id == Component.id)
-            .outerjoin(Category, Component.category_id == Category.id)
+            .join(Item, Transaction.item_id == Item.id)
+            .outerjoin(Category, Item.category_id == Category.id)
             .filter(Transaction.type == 'in')
             .group_by(Category.id, Category.name)
             .order_by(func.sum(Transaction.quantity * Transaction.unit_price).desc())
@@ -133,28 +133,29 @@ def purchases_by(group='component', limit=10, start=None, end=None):
 
     q = (
         db.session.query(
-            Component.id,
-            Component.name,
-            Component.value,
+            Item.id,
+            Item.name,
+            ItemSpec.spec_value,
             func.coalesce(func.sum(Transaction.quantity), 0),
             func.coalesce(func.sum(Transaction.quantity * Transaction.unit_price), 0.0),
         )
         .select_from(Transaction)
-        .join(Component, Transaction.component_id == Component.id)
+        .join(Item, Transaction.item_id == Item.id)
+        .outerjoin(ItemSpec, ItemSpec.item_id == Item.id)
         .filter(Transaction.type == 'in')
-        .group_by(Component.id, Component.name, Component.value)
+        .group_by(Item.id, Item.name, ItemSpec.spec_value)
         .order_by(func.sum(Transaction.quantity * Transaction.unit_price).desc())
         .limit(limit)
     )
     rows = _range_filter(q, start, end).all()
     return [
         {
-            'id': component_id,
+            'id': item_id,
             'name': f'{name}{" " + value if value else ""}',
             'quantity': int(qty),
             'cost': _round(cost),
         }
-        for component_id, name, value, qty, cost in rows
+        for item_id, name, value, qty, cost in rows
     ]
 
 
@@ -171,8 +172,8 @@ def consumption_by(group='component', limit=10, start=None, end=None):
                 func.coalesce(func.sum(Transaction.quantity), 0),
             )
             .select_from(Transaction)
-            .join(Component, Transaction.component_id == Component.id)
-            .outerjoin(Category, Component.category_id == Category.id)
+            .join(Item, Transaction.item_id == Item.id)
+            .outerjoin(Category, Item.category_id == Category.id)
             .filter(Transaction.type == 'out')
             .group_by(Category.id, Category.name)
             .order_by(func.sum(Transaction.quantity).desc())
@@ -186,24 +187,25 @@ def consumption_by(group='component', limit=10, start=None, end=None):
 
     q = (
         db.session.query(
-            Component.id,
-            Component.name,
-            Component.value,
+            Item.id,
+            Item.name,
+            ItemSpec.spec_value,
             func.coalesce(func.sum(Transaction.quantity), 0),
         )
         .select_from(Transaction)
-        .join(Component, Transaction.component_id == Component.id)
+        .join(Item, Transaction.item_id == Item.id)
+        .outerjoin(ItemSpec, ItemSpec.item_id == Item.id)
         .filter(Transaction.type == 'out')
-        .group_by(Component.id, Component.name, Component.value)
+        .group_by(Item.id, Item.name, ItemSpec.spec_value)
         .order_by(func.sum(Transaction.quantity).desc())
         .limit(limit)
     )
     rows = _range_filter(q, start, end).all()
     result = []
-    for component_id, name, value, qty in rows:
-        price = avg_prices.get(component_id)
+    for item_id, name, value, qty in rows:
+        price = avg_prices.get(item_id)
         result.append({
-            'id': component_id,
+            'id': item_id,
             'name': f'{name}{" " + value if value else ""}',
             'quantity': int(qty),
             'estimated_cost': _round(qty * price) if price else 0.0,
@@ -274,12 +276,12 @@ def monthly_trend(months=12, start=None, end=None):
 def export_components(start=None, end=None):
     """导出指定时间范围内，按元件汇总的采购 / 消耗明细（用于 CSV）。"""
     transactions = _range_filter(Transaction.query, start, end).all()
-    components = Component.query.order_by(Component.id.asc()).all()
+    components = Item.query.order_by(Item.id.asc()).all()
     avg_prices = _component_avg_prices()
 
     agg = {}
     for tx in transactions:
-        a = agg.setdefault(tx.component_id, {'in_qty': 0, 'in_cost': 0.0, 'out_qty': 0})
+        a = agg.setdefault(tx.item_id, {'in_qty': 0, 'in_cost': 0.0, 'out_qty': 0})
         if tx.type == 'in':
             a['in_qty'] += tx.quantity
             if tx.unit_price:

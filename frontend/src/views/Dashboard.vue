@@ -64,7 +64,7 @@
             </div>
           </template>
           <el-table :data="recent" border stripe empty-text="暂无流水">
-            <el-table-column prop="component_name" label="物料" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="item_name" label="物料" min-width="120" show-overflow-tooltip />
             <el-table-column label="类型" width="80" align="center">
               <template #default="{ row }">
                 <el-tag size="small" :type="row.type === 'in' ? 'success' : 'danger'">

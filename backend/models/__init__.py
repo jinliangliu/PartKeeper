@@ -23,7 +23,7 @@ class Category(db.Model):
     name = db.Column(db.String(50), nullable=False)
     parent_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=True)
     
-    components = db.relationship('Component', backref='category', lazy=True)
+    items = db.relationship('Item', backref='category', lazy=True)
     children = db.relationship('Category', backref=db.backref('parent', remote_side=[id]), lazy=True)
 
 class Supplier(db.Model):
@@ -36,7 +36,7 @@ class Supplier(db.Model):
     address = db.Column(db.String(200))
     website = db.Column(db.String(200))
     
-    components = db.relationship('Component', backref='supplier', lazy=True)
+    items = db.relationship('Item', backref='supplier', lazy=True)
 
 class Location(db.Model):
     __tablename__ = 'locations'
@@ -45,40 +45,139 @@ class Location(db.Model):
     name = db.Column(db.String(50), unique=True, nullable=False)
     description = db.Column(db.String(100))
     
-    components = db.relationship('Component', backref='location', lazy=True)
+    items = db.relationship('Item', backref='location', lazy=True)
 
-class Component(db.Model):
-    __tablename__ = 'components'
-    
+
+class Item(db.Model):
+    """统一物品主表：电子元器件、家电、家具、车辆等共用一张表。
+
+    主表只放**与类型无关**的属性（名称、品牌、库存、分类、库位，以及保修/维护/
+    消耗这类家庭生命周期字段）。类型专有属性放 ``item_specs`` 扩展表（1:1），
+    新增类型不必给主表加列——这是从「Component 19 个字段上帝表」拆出来的核心目的。
+
+    ``value`` / ``package`` / ``tolerance`` / ``datasheet_url`` 四个元器件字段
+    通过 property 代理读写扩展表：调用点（路由、MCP、BOM 匹配、统计）可以继续写
+    ``item.value``，但**不能用于 SQL 表达式**（不是 InstrumentedAttribute），
+    需要按这些字段过滤/分组时必须显式 join ``ItemSpec``。
+    """
+    __tablename__ = 'items'
+
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    category_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
+    kind = db.Column(db.String(30), nullable=False, default='electronic', index=True)
     name = db.Column(db.String(100), nullable=False)
-    value = db.Column(db.String(50))
-    package = db.Column(db.String(30))
-    tolerance = db.Column(db.String(10))
     brand = db.Column(db.String(50))
-    datasheet_url = db.Column(db.String(255))
+    unit = db.Column(db.String(10), default='个')
     min_stock = db.Column(db.Integer, default=0)
     current_stock = db.Column(db.Integer, default=0)
+    category_id = db.Column(db.Integer, db.ForeignKey('categories.id'))
     location_id = db.Column(db.Integer, db.ForeignKey('locations.id'))
     supplier_id = db.Column(db.Integer, db.ForeignKey('suppliers.id'))
-    unit = db.Column(db.String(10), default='个')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # --- 家庭场景通用属性（方案 B 时可平移到 Item 主表） ---
+    # --- 家庭场景通用属性（与物品类型无关，故留在主表） ---
     is_consumable = db.Column(db.Boolean, default=False)          # 是否为消耗品
     consumption_rate = db.Column(db.Float)                        # 显式消耗速率（单位/天），留空则从出库流水推算
     warranty_expiry = db.Column(db.Date)                          # 保修到期日
     maintenance_cycle_days = db.Column(db.Integer)                # 维护周期（天）
     last_maintenance_date = db.Column(db.Date)                    # 上次维护日期
 
-    transactions = db.relationship('Transaction', backref='component', lazy=True)
+    # 类型扩展：joined 加载，列表页避免 N+1，也避免会话关闭后代理属性访问失败
+    spec = db.relationship(
+        'ItemSpec',
+        backref=db.backref('item', lazy='joined'),
+        uselist=False,
+        cascade='all, delete-orphan',
+        lazy='joined',
+    )
+
+    transactions = db.relationship('Transaction', backref='item', lazy=True)
+
+    # 物品类型固定集合（String 而非 Enum：新增类型无需改表结构）
+    VALID_KINDS = ('electronic', 'appliance', 'furniture', 'vehicle', 'other')
+
+    def _spec_for_write(self):
+        """取扩展表记录，没有就建一条。元器件字段写入前必须调用。"""
+        if self.spec is None:
+            self.spec = ItemSpec()
+        return self.spec
+
+    def _write_spec(self, column, value):
+        """写扩展表。空值且尚无扩展行时不建行——纯家电/家具不该留下空壳记录。"""
+        if value in (None, '') and self.spec is None:
+            return
+        setattr(self._spec_for_write(), column, value)
+
+    @property
+    def value(self):
+        return self.spec.spec_value if self.spec else None
+
+    @value.setter
+    def value(self, v):
+        self._write_spec('spec_value', v)
+
+    @property
+    def package(self):
+        return self.spec.spec_package if self.spec else None
+
+    @package.setter
+    def package(self, v):
+        self._write_spec('spec_package', v)
+
+    @property
+    def tolerance(self):
+        return self.spec.spec_tolerance if self.spec else None
+
+    @tolerance.setter
+    def tolerance(self, v):
+        self._write_spec('spec_tolerance', v)
+
+    @property
+    def datasheet_url(self):
+        return self.spec.datasheet_url if self.spec else None
+
+    @datasheet_url.setter
+    def datasheet_url(self, v):
+        self._write_spec('datasheet_url', v)
+
+    def spec_attrs(self):
+        """扩展表的自由属性（JSON 解码后），供新增物品类型使用。"""
+        import json
+        if not self.spec or not self.spec.attrs:
+            return {}
+        try:
+            data = json.loads(self.spec.attrs)
+        except (TypeError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+
+class ItemSpec(db.Model):
+    """物品类型扩展表（1:1 于 items）。
+
+    目前承载电子元器件的专有属性（阻值/容值、封装、精度、数据手册）。这些字段
+    刻意用**独立列**而非 JSON：它们是元器件的检索维度（按阻值搜、按封装匹配 BOM），
+    放进 JSON 就只能退化成 Python 层过滤。
+
+    ``attrs`` 是给尚未建模的新类型留的兜底（如家电的额定功率、车辆的里程），
+    JSON 文本，仅展示用，不参与 SQL 检索。
+    """
+    __tablename__ = 'item_specs'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id', ondelete='CASCADE'),
+                        nullable=False, unique=True, index=True)
+    spec_value = db.Column(db.String(50))          # 元器件：阻值 / 容值 / 型号标称值
+    spec_package = db.Column(db.String(30))        # 封装：0603 / SOT-23
+    spec_tolerance = db.Column(db.String(10))      # 精度：±1%
+    datasheet_url = db.Column(db.String(255))
+    attrs = db.Column(db.Text)                     # 其他类型自由属性（JSON 文本）
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Transaction(db.Model):
     __tablename__ = 'transactions'
     
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    component_id = db.Column(db.Integer, db.ForeignKey('components.id'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
     type = db.Column(db.Enum('in', 'out'), nullable=False)
     quantity = db.Column(db.Integer, nullable=False)
     unit_price = db.Column(db.Float)  # 入库时的单价（元），仅采购入库使用；出库为空
@@ -154,7 +253,7 @@ class Expense(db.Model):
     source = db.Column(db.String(30), default='manual')               # 录入来源：screenshot/manual
     dedup_key = db.Column(db.String(64), unique=True, nullable=False, index=True)
     # 可空外键：买家电、修空调这类钱可以挂到具体物品上，普通生活开支留空
-    component_id = db.Column(db.Integer, db.ForeignKey('components.id'), index=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     attachments = db.relationship(
@@ -163,7 +262,7 @@ class Expense(db.Model):
         cascade='all, delete-orphan',
         lazy=True,
     )
-    component = db.relationship('Component', backref=db.backref('expenses', lazy=True))
+    item = db.relationship('Item', backref=db.backref('expenses', lazy=True))
 
     # 一级类型固定集合（String 而非 Enum：后续新增类型无需改表结构）
     VALID_CATEGORIES = (
@@ -220,7 +319,7 @@ class Maintenance(db.Model):
     """物品维护记录：清洁保养、维修、更换耗材、巡检。
 
     刻意**不存金额**——钱只记在 expenses 一处。维护产生的花费通过 ``expense_id``
-    关联到一笔开支（类型 maintenance，同时挂 component_id），这样：
+    关联到一笔开支（类型 maintenance，同时挂 item_id），这样：
       · 家庭总支出自动包含维修费，不用在统计里加第三张表；
       · 物品账本 = 该物品名下所有开支之和，购置与维修天然同源，不会两处对不上。
 
@@ -230,8 +329,8 @@ class Maintenance(db.Model):
     __tablename__ = 'maintenances'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    component_id = db.Column(db.Integer, db.ForeignKey('components.id'),
-                             nullable=False, index=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'),
+                        nullable=False, index=True)
     type = db.Column(db.String(20), nullable=False, default='other', index=True)
     title = db.Column(db.String(120), nullable=False)          # 做了什么：换滤芯 / 清洗冷凝器
     performed_at = db.Column(db.DateTime, nullable=False, index=True)
@@ -240,7 +339,7 @@ class Maintenance(db.Model):
     note = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    component = db.relationship('Component', backref=db.backref('maintenances', lazy=True))
+    item = db.relationship('Item', backref=db.backref('maintenances', lazy=True))
     expense = db.relationship('Expense', backref=db.backref('maintenance', uselist=False))
 
     # 维护类型固定集合（与 utils.ledger.MAINTENANCE_LABELS 一一对应）
@@ -268,7 +367,7 @@ class BomItem(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     bom_id = db.Column(db.Integer, db.ForeignKey('boms.id'), nullable=False)
-    component_id = db.Column(db.Integer, db.ForeignKey('components.id'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
     quantity = db.Column(db.Integer, nullable=False, default=1)
 
-    component = db.relationship('Component', backref='bom_items', lazy=True)
+    item = db.relationship('Item', backref='bom_items', lazy=True)

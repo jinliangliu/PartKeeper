@@ -81,7 +81,7 @@ npm run dev
 
 ## 主要功能
 
-- 物料管理：多条件搜索、分页、CRUD，关联分类/库位/供应商
+- 物品管理：一张 `items` 主表统一管理电子元器件、家电、家具、车辆等，多条件搜索、分页、CRUD，关联分类/库位/供应商；类型专有属性放 `item_specs` 扩展表，新增类型不必改主表结构
 - BOM 导入：上传常见 EDA 导出的 CSV 物料清单，自动匹配现有库存、标记缺口，并可一键创建缺失物料
 - BOM 管理：维护常用物料清单（物料 + 数量），出库时可选 BOM 批量出库，批量表格支持增删改数量
 - 分类管理：树形多级分类
@@ -130,9 +130,9 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 | 工具 | 说明 |
 |------|------|
-| `list_components` | 物料列表，支持关键词/分类/低库存过滤 |
-| `get_component` | 按 ID 查物品详情（含消耗品/保修/维护属性） |
-| `create_component` | 新建物品档案，分类/库位/供应商按名称自动关联；支持消耗品与保修维护字段 |
+| `list_components` | 物品列表，支持关键词（名称/值/封装/品牌）/分类/低库存过滤，返回含 `kind` 类型 |
+| `get_component` | 按 ID 查物品详情（含类型、消耗品/保修/维护属性） |
+| `create_component` | 新建物品档案，`kind` 支持 electronic/appliance/furniture/vehicle/other；分类/库位/供应商按名称自动关联；支持消耗品与保修维护字段 |
 | `list_low_stock` | 低库存预警清单 |
 | `get_replenishment_suggestions` | 消耗品补货建议：按消耗速率估算剩余天数、建议补货量与紧急度 |
 | `list_expiring_warranties` | 保修到期与维护到期扫描（含已过期） |

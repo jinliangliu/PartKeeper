@@ -12,7 +12,7 @@ from datetime import datetime
 from flask import Blueprint, current_app, jsonify, request, send_file
 from sqlalchemy import or_
 
-from models import Component, Expense, ExpenseAttachment, db
+from models import Item, Expense, ExpenseAttachment, db
 from services import receipt_service
 from utils.decorators import admin_required, login_required
 from utils.ledger import CHANNELS as _CHANNELS, EXPENSE_LABELS as _LABELS
@@ -63,8 +63,8 @@ def _expense_dict(exp, attachments=None):
         'note': exp.note,
         'tags': [t for t in (exp.tags or '').split(',') if t],
         'currency': exp.currency or 'CNY',
-        'component_id': exp.component_id,
-        'component_name': exp.component.name if exp.component else None,
+        'item_id': exp.item_id,
+        'item_name': exp.item.name if exp.item else None,
         'attachments': [_att_dict(a) for a in (attachments or [])],
     }
 
@@ -92,7 +92,7 @@ def _parse_dt(value):
 
 
 def _resolve_component(raw):
-    """校验并归一化「关联物品」。返回 (component_id, None) 或 (None, 错误响应)。
+    """校验并归一化「关联物品」。返回 (item_id, None) 或 (None, 错误响应)。
 
     空值、0、null 都视为不关联——生活开支大多数与具体物品无关。
     """
@@ -101,8 +101,8 @@ def _resolve_component(raw):
     try:
         cid = int(raw)
     except (TypeError, ValueError):
-        return None, _err('component_id 必须是整数')
-    if not db.session.get(Component, cid):
+        return None, _err('item_id 必须是整数')
+    if not db.session.get(Item, cid):
         return None, _err(f'物品 ID {cid} 不存在', 404)
     return cid, None
 
@@ -134,9 +134,9 @@ def list_expenses():
         query = query.filter(Expense.category == category)
     if channel in _CHANNEL_KEYS:
         query = query.filter(Expense.channel == channel)
-    component_id = request.args.get('component_id', type=int)
-    if component_id:
-        query = query.filter(Expense.component_id == component_id)
+    item_id = request.args.get('item_id', type=int) or request.args.get('component_id', type=int)
+    if item_id:
+        query = query.filter(Expense.item_id == item_id)
     if merchant:
         query = query.filter(Expense.merchant.like(f'%{merchant}%'))
     start_dt = _parse_day(request.args.get('start'))
@@ -155,7 +155,7 @@ def list_expenses():
         ))
 
     total_amount = query.with_entities(db.func.coalesce(db.func.sum(Expense.amount), 0)).scalar()
-    pagination = query.options(db.joinedload(Expense.component)).order_by(
+    pagination = query.options(db.joinedload(Expense.item)).order_by(
         Expense.occurred_at.desc(), Expense.id.desc()
     ).paginate(page=page, per_page=per_page, error_out=False)
 
@@ -206,7 +206,7 @@ def create_expense():
     if Expense.query.filter_by(dedup_key=key).first():
         return _err('该开支已存在（同渠道同单号，或同渠道同日同类型同金额同商户）', 409)
 
-    component_id, err = _resolve_component(body.get('component_id'))
+    item_id, err = _resolve_component(body.get('item_id') or body.get('component_id'))
     if err:
         return err
 
@@ -223,7 +223,7 @@ def create_expense():
         currency=str(body.get('currency') or 'CNY').strip().upper()[:8],
         source=str(body.get('source') or 'manual').strip(),
         dedup_key=key,
-        component_id=component_id,
+        item_id=item_id,
     )
     db.session.add(exp)
     db.session.commit()
@@ -257,7 +257,7 @@ def delete_expense(expense_id):
 @expenses_bp.route('/<int:expense_id>/component', methods=['PUT'])
 @login_required
 def set_expense_component(expense_id):
-    """调整开支关联的物品。传 component_id=null/0 表示取消关联。
+    """调整开支关联的物品。传 item_id=null/0 表示取消关联。
 
     单独开这个接口，是为了让已经录过的开支也能补挂到物品上（逐字段 PATCH 语义），
     不必重新提交整条记录而触发去重键重算。
@@ -266,10 +266,10 @@ def set_expense_component(expense_id):
     if not exp:
         return _err('开支不存在', 404)
     body = request.get_json(silent=True) or {}
-    component_id, err = _resolve_component(body.get('component_id'))
+    item_id, err = _resolve_component(body.get('item_id') or body.get('component_id'))
     if err:
         return err
-    exp.component_id = component_id
+    exp.item_id = item_id
     db.session.commit()
     return _ok(_expense_dict(exp, exp.attachments), '已更新')
 

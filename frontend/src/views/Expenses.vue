@@ -78,8 +78,8 @@
         <el-table-column prop="merchant" label="商户 / 机构" min-width="130" show-overflow-tooltip />
         <el-table-column label="物品" width="120" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-tag v-if="row.component_name" size="small" type="success" effect="plain">
-              {{ row.component_name }}
+            <el-tag v-if="row.item_name" size="small" type="success" effect="plain">
+              {{ row.item_name }}
             </el-tag>
             <el-button v-else link type="primary" @click="openLink(row)">关联</el-button>
           </template>
@@ -151,7 +151,7 @@
           <el-input v-model="form.merchant" placeholder="机构 / 平台 / 店铺" />
         </el-form-item>
         <el-form-item label="关联物品">
-          <el-select v-model="form.component_id" filterable remote clearable
+          <el-select v-model="form.item_id" filterable remote clearable
                      :remote-method="searchComponents" :loading="compLoading"
                      placeholder="买家电/家具/数码时关联，便于算这台机器总共花了多少"
                      style="width: 100%">
@@ -269,7 +269,7 @@ const receipts = ref([])
 const pendingFiles = ref([])
 const form = reactive({
   category: 'education', subcategory: '', amount: 100, occurred_at: '', merchant: '',
-  channel: 'wechat', tags: '', note: '', component_id: null
+  channel: 'wechat', tags: '', note: '', item_id: null
 })
 
 // --- 关联物品（远程搜索，物品多时不必一次全量拉取） ---
@@ -292,7 +292,7 @@ async function searchComponents(keyword = '') {
 
 function openLink(row) {
   linkRow.value = row
-  linkComponentId.value = row.component_id || null
+  linkComponentId.value = row.item_id || null
   linkVisible.value = true
   searchComponents('')
 }
@@ -301,7 +301,7 @@ async function saveLink() {
   linkSaving.value = true
   try {
     await http.put(`/expenses/${linkRow.value.id}/component`, {
-      component_id: linkComponentId.value || null
+      item_id: linkComponentId.value || null
     })
     ElMessage.success(linkComponentId.value ? '已关联' : '已取消关联')
     linkVisible.value = false
@@ -424,7 +424,7 @@ function openCreate() {
   Object.assign(form, {
     category: 'education', subcategory: '', amount: 100,
     occurred_at: new Date().toISOString().slice(0, 10),
-    merchant: '', channel: 'wechat', tags: '', note: '', component_id: null
+    merchant: '', channel: 'wechat', tags: '', note: '', item_id: null
   })
   clearPending()
   createVisible.value = true

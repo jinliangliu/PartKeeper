@@ -47,7 +47,7 @@ def serialize(record, with_component=False):
     exp = record.expense
     row = {
         'id': record.id,
-        'component_id': record.component_id,
+        'item_id': record.item_id,
         'type': record.type,
         'type_label': MAINTENANCE_LABELS.get(record.type, record.type),
         'title': record.title,
@@ -60,7 +60,7 @@ def serialize(record, with_component=False):
         'channel_label': dict(CHANNELS).get(exp.channel) if exp else None,
     }
     if with_component:
-        row['component_name'] = record.component.name if record.component else None
+        row['item_name'] = record.item.name if record.item else None
     return row
 
 
@@ -89,7 +89,7 @@ def create_record(component, title, performed_at, mtype='other', vendor=None,
 
     vendor = (str(vendor).strip()[:100] or None) if vendor else None
     record = Maintenance(
-        component_id=component.id,
+        item_id=component.id,
         type=normalize_type(mtype),
         title=title[:120],
         performed_at=performed_at,
@@ -122,7 +122,7 @@ def create_record(component, title, performed_at, mtype='other', vendor=None,
                 note=f'{component.name} · {title}'[:255],
                 source='maintenance',
                 dedup_key=key,
-                component_id=component.id,
+                item_id=component.id,
             )
             db.session.add(expense)
             db.session.flush()
@@ -139,7 +139,7 @@ def create_record(component, title, performed_at, mtype='other', vendor=None,
 
 def build_ledger(component):
     """单个物品的持有账本。返回可直接 JSON 化的字典。"""
-    rows = Expense.query.filter(Expense.component_id == component.id).order_by(
+    rows = Expense.query.filter(Expense.item_id == component.id).order_by(
         Expense.occurred_at.asc()
     ).all()
 
@@ -149,7 +149,7 @@ def build_ledger(component):
     service_total = round(sum(float(e.amount or 0) for e in service_rows), 2)
     total = round(purchase_total + service_total, 2)
 
-    records = Maintenance.query.filter_by(component_id=component.id).order_by(
+    records = Maintenance.query.filter_by(item_id=component.id).order_by(
         Maintenance.performed_at.desc(), Maintenance.id.desc()
     ).all()
 
@@ -171,8 +171,8 @@ def build_ledger(component):
         overdue = due_date <= datetime.now().date()
 
     return {
-        'component_id': component.id,
-        'component_name': component.name,
+        'item_id': component.id,
+        'item_name': component.name,
         'purchase_total': purchase_total,
         'purchase_count': len(purchase_rows),
         'maintenance_total': service_total,

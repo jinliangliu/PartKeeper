@@ -10,7 +10,7 @@
         active-text-color="#fff"
       >
         <el-menu-item index="/dashboard">仪表盘</el-menu-item>
-        <el-menu-item index="/components">物料管理</el-menu-item>
+        <el-menu-item index="/components">物品管理</el-menu-item>
         <el-menu-item index="/categories">分类管理</el-menu-item>
         <el-menu-item index="/suppliers">供应商管理</el-menu-item>
         <el-menu-item index="/locations">库位管理</el-menu-item>

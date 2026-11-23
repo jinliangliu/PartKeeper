@@ -66,7 +66,7 @@ def delete_location(location_id):
     location = db.session.get(Location, location_id)
     if not location:
         return jsonify({'code': 404, 'message': '库位不存在', 'data': None}), 404
-    if location.components:
+    if location.items:
         return jsonify({'code': 400, 'message': '该库位已被物料引用，无法删除', 'data': None}), 400
 
     db.session.delete(location)

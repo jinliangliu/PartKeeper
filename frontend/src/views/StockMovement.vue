@@ -10,9 +10,9 @@
     />
 
     <el-form ref="formRef" :model="form" :rules="rules" label-width="100px" class="form">
-      <el-form-item label="物料" prop="component_id">
+      <el-form-item label="物料" prop="item_id">
         <el-select
-          v-model="form.component_id"
+          v-model="form.item_id"
           filterable
           remote
           :remote-method="searchComponents"
@@ -146,9 +146,9 @@ const searching = ref(false)
 const submitting = ref(false)
 const componentOptions = ref([])
 const selected = ref(null)
-const form = reactive({ component_id: null, quantity: 1, unit_price: null, note: '' })
+const form = reactive({ item_id: null, quantity: 1, unit_price: null, note: '' })
 const rules = {
-  component_id: [{ required: true, message: '请选择物料', trigger: 'change' }],
+  item_id: [{ required: true, message: '请选择物料', trigger: 'change' }],
   quantity: [{ required: true, message: '请输入数量', trigger: 'change' }]
 }
 
@@ -180,7 +180,7 @@ function handleComponentChange(id) {
 }
 
 function reset() {
-  form.component_id = null
+  form.item_id = null
   form.quantity = 1
   form.unit_price = null
   form.note = ''
@@ -193,7 +193,7 @@ async function submit() {
   submitting.value = true
   try {
     const payload = {
-      component_id: form.component_id,
+      item_id: form.item_id,
       quantity: form.quantity,
       note: form.note
     }
@@ -225,8 +225,8 @@ async function handleBomSelect(id) {
   if (!id) return
   const res = await http.get(`/boms/${id}`)
   batchRows.value = res.data.items.map((it) => ({
-    component_id: it.component_id,
-    label: `${it.component_name}${it.value ? ` · ${it.value}` : ''}${it.package ? ` · ${it.package}` : ''}`,
+    item_id: it.item_id,
+    label: `${it.item_name}${it.value ? ` · ${it.value}` : ''}${it.package ? ` · ${it.package}` : ''}`,
     current_stock: it.current_stock,
     unit: it.unit,
     quantity: it.quantity
@@ -240,12 +240,12 @@ function addBatchRow() {
   }
   const opt = componentOptions.value.find((c) => c.id === batchNewComponentId.value)
   if (!opt) return
-  if (batchRows.value.some((r) => r.component_id === opt.id)) {
+  if (batchRows.value.some((r) => r.item_id === opt.id)) {
     ElMessage.warning('该物料已在列表中')
     return
   }
   batchRows.value.push({
-    component_id: opt.id,
+    item_id: opt.id,
     label: opt.label,
     current_stock: opt.current_stock,
     unit: opt.unit,
@@ -264,7 +264,7 @@ async function submitBatch() {
   batchSaving.value = true
   try {
     const res = await http.post('/transactions/out-batch', {
-      items: batchRows.value.map((r) => ({ component_id: r.component_id, quantity: r.quantity }))
+      items: batchRows.value.map((r) => ({ item_id: r.item_id, quantity: r.quantity }))
     })
     ElMessage.success(res.message || '批量出库成功')
     batchDialogVisible.value = false

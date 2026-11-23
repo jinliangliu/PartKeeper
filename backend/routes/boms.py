@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 
-from models import db, Bom, BomItem, Component
+from models import db, Bom, BomItem, Item
 from utils.decorators import login_required, admin_required
 
 boms_bp = Blueprint('boms', __name__, url_prefix='/api/boms')
@@ -20,15 +20,15 @@ def _serialize_bom(bom, with_items=False):
 
 
 def _serialize_item(item):
-    component = item.component
+    target = item.item
     return {
         'id': item.id,
-        'component_id': item.component_id,
-        'component_name': component.name if component else None,
-        'value': component.value if component else None,
-        'package': component.package if component else None,
-        'current_stock': component.current_stock if component else 0,
-        'unit': component.unit if component else '个',
+        'item_id': item.item_id,
+        'item_name': target.name if target else None,
+        'value': target.value if target else None,
+        'package': target.package if target else None,
+        'current_stock': target.current_stock if target else 0,
+        'unit': target.unit if target else '个',
         'quantity': item.quantity,
     }
 
@@ -39,14 +39,14 @@ def _validate_items(items):
         raise ValueError('明细格式不正确')
     result = []
     for it in items:
-        component_id = it.get('component_id')
+        item_id = it.get('item_id') or it.get('component_id')
         quantity = it.get('quantity', 1)
-        component = db.session.get(Component, component_id)
+        component = db.session.get(Item, item_id)
         if not component:
             raise ValueError('存在不存在的物料')
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
             raise ValueError(f'物料「{component.name}」数量必须为正整数')
-        result.append(BomItem(component_id=component_id, quantity=quantity))
+        result.append(BomItem(item_id=item_id, quantity=quantity))
     return result
 
 

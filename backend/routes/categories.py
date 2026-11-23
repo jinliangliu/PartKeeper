@@ -77,7 +77,7 @@ def delete_category(category_id):
         return jsonify({'code': 404, 'message': '分类不存在', 'data': None}), 404
     if category.children:
         return jsonify({'code': 400, 'message': '存在子分类，无法删除', 'data': None}), 400
-    if category.components:
+    if category.items:
         return jsonify({'code': 400, 'message': '该分类下存在物料，无法删除', 'data': None}), 400
 
     db.session.delete(category)
