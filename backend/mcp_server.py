@@ -50,12 +50,23 @@ def _lookup_issued_token(token):
 
     MCP 进程独立于 Flask 运行，但共用同一个 SQLite 库——Web 上点「撤销」后
     下一次请求就会失败，不需要重启 MCP 服务。
+
+    **必须在这里把字段取成普通 dict**：app_context 退出时 SQLAlchemy 会 remove
+    session，ORM 实例随即 detached/expired，之后再读 row.id 会抛
+    DetachedInstanceError（线上踩过，表现为鉴权通过后 500）。
     """
     from app import app as flask_app          # 延迟导入：避免循环依赖
     from services import token_service
 
     with flask_app.app_context():
-        return token_service.verify_value(token)
+        row = token_service.verify_value(token)
+        if row is None:
+            return None
+        return {
+            'id': row.id,
+            'user_id': row.user_id,
+            'scopes': row.scopes,
+        }
 
 
 class PartKeeperTokenVerifier(TokenVerifier):
@@ -77,8 +88,8 @@ class PartKeeperTokenVerifier(TokenVerifier):
         if row is not None:
             return AccessToken(
                 token=token,
-                client_id=f'pat-{row.id}',
-                scopes=[s for s in (row.scopes or 'mcp:admin').split(',') if s],
+                client_id=f"pat-{row['id']}",
+                scopes=[s for s in (row['scopes'] or 'mcp:admin').split(',') if s],
             )
 
         # 3) 复用 Web 端 JWT：仅放行 admin
