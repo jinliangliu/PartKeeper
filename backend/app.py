@@ -15,6 +15,7 @@ if BASE_DIR not in sys.path:
 from flask import Flask, jsonify, current_app
 from flask_cors import CORS
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from config import Config
 from models import db, User, Category
@@ -239,19 +240,30 @@ def register_error_handlers(app):
 
 
 def seed_admin():
-    """初始化管理员账号（用户名/密码来自环境变量），仅当不存在时创建。"""
+    """初始化管理员账号（用户名/密码来自环境变量），仅当不存在时创建。
+
+    多进程（如 gunicorn 多 worker）同时启动时会并发走到这里：先查后插存在竞态，
+    两个进程都查不到就会都去插入，后插入的撞 users.username 唯一约束。
+    这里捕获并忽略——种子数据的语义是「有则不动」，重复插入不算错误，
+    让先提交的那个生效即可。若把异常抛出去，worker 会退出，整个服务启动失败。
+    """
     username = current_app.config.get('ADMIN_USERNAME', 'admin')
     password = current_app.config.get('ADMIN_PASSWORD', 'admin123')
     email = current_app.config.get('ADMIN_EMAIL', 'admin@example.com')
-    if User.query.filter_by(username=username).first() is None:
-        admin = User(
-            username=username,
-            password_hash=hash_password(password),
-            role='admin',
-            email=email,
-        )
-        db.session.add(admin)
+    if User.query.filter_by(username=username).first() is not None:
+        return
+
+    admin = User(
+        username=username,
+        password_hash=hash_password(password),
+        role='admin',
+        email=email,
+    )
+    db.session.add(admin)
+    try:
         db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
 
 
 def seed_categories():
