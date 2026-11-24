@@ -16,6 +16,55 @@ class User(db.Model):
     
     transactions = db.relationship('Transaction', backref='operator', lazy=True)
 
+
+class ApiToken(db.Model):
+    """对外访问令牌（个人访问令牌 / PAT），供 MCP 连接器等外部客户端使用。
+
+    为什么不用登录 JWT：登录令牌有效期只有 JWT_EXPIRATION_HOURS（默认 24h），
+    连接器需要长期有效的凭证；而 .env 里的 MCP_API_KEY 是全局静态串，改一次要重启，
+    也记不到「谁在用、什么时候用的」。
+
+    **只存 SHA-256 摘要**，明文在创建时返回一次后即不可再取（GitHub PAT 同款做法）——
+    数据库被拷走也拿不到可用凭证。``prefix`` 保留明文头部用于列表辨识，
+    二者组合无法还原原文。
+    """
+    __tablename__ = 'api_tokens'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    name = db.Column(db.String(60), nullable=False)               # 用途备注：WorkBuddy 连接器
+    prefix = db.Column(db.String(16), nullable=False, index=True)  # pk_xxxxxxxx，仅展示
+    token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    scopes = db.Column(db.String(200), nullable=False, default='mcp:admin')
+    expires_at = db.Column(db.DateTime)          # NULL = 永不过期
+    last_used_at = db.Column(db.DateTime)
+    revoked_at = db.Column(db.DateTime)          # 非空 = 已撤销（保留记录，便于审计）
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship(
+        'User',
+        backref=db.backref('api_tokens', lazy=True, cascade='all, delete-orphan'),
+    )
+
+    def is_active(self, now=None):
+        """令牌当前是否可用：未撤销、未过期。"""
+        now = now or datetime.utcnow()
+        if self.revoked_at is not None:
+            return False
+        if self.expires_at is not None and self.expires_at <= now:
+            return False
+        return True
+
+    @property
+    def status(self):
+        """供前端展示的三态：active / expired / revoked。"""
+        if self.revoked_at is not None:
+            return 'revoked'
+        if self.expires_at is not None and self.expires_at <= datetime.utcnow():
+            return 'expired'
+        return 'active'
+
+
 class Category(db.Model):
     __tablename__ = 'categories'
     

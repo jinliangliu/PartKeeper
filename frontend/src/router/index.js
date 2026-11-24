@@ -26,6 +26,7 @@ const routes = [
       { path: 'statistics', name: 'statistics', component: () => import('../views/Statistics.vue'), meta: { title: '统计分析' } },
       { path: 'utility-bills', name: 'utility-bills', component: () => import('../views/UtilityBills.vue'), meta: { title: '生活缴费' } },
       { path: 'expenses', name: 'expenses', component: () => import('../views/Expenses.vue'), meta: { title: '家庭开支' } },
+      { path: 'access-tokens', name: 'access-tokens', component: () => import('../views/AccessTokens.vue'), meta: { title: '访问令牌', admin: true } },
       { path: 'users', name: 'users', component: () => import('../views/Users.vue'), meta: { title: '用户管理', admin: true } }
     ]
   },

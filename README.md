@@ -124,7 +124,42 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 ### 认证
 
-所有请求需在 Header 携带 `Authorization: Bearer <MCP_API_KEY>`。密钥来自 `backend/.env` 的 `MCP_API_KEY`；留空时仅接受用 `SECRET_KEY` 签发、`role=admin` 的 JWT。未携带或无效 token 返回 `401`。
+所有请求需在 Header 携带 `Authorization: Bearer <token>`，令牌支持三种来源，按顺序校验：
+
+| 令牌 | 来源 | 适用 |
+|------|------|------|
+| `pk_...` 访问令牌 | Web 端「访问令牌」页面生成 | **推荐**。可命名、可设有效期、可随时撤销，撤销后下一次请求即失效，无需重启服务 |
+| `MCP_API_KEY` | `backend/.env` 静态密钥 | 全局共用的应急密钥，改一次要重启服务 |
+| admin JWT | Web 登录签发 | 有效期仅 `JWT_EXPIRATION_HOURS`（默认 24h），适合临时调试 |
+
+未携带或无效 token 返回 `401`。
+
+### 访问令牌（Web 发放）
+
+管理员登录后进入侧边栏「访问令牌」：
+
+1. 点「生成令牌」，填名称（如 `WorkBuddy 连接器`）与有效期（30/90/365 天或永久）；
+2. 明文令牌**只在生成时显示一次**，弹窗内提供「复制令牌」与「复制端点 + 令牌」；
+3. 列表展示前缀、状态（可用 / 已过期 / 已撤销）、最后使用时间与有效期，可随时撤销。
+
+安全设计：
+
+- 库里**只存 SHA-256 摘要**，明文不落库；`prefix`（`pk_` + 8 位）仅用于列表辨识，无法还原原文。
+- 令牌绑定创建者，且要求 `role=admin`——用户被降级后令牌立即失效，不必等管理员手动撤销。
+- 撤销为软删除（置 `revoked_at`），保留审计痕迹；重复撤销返回 `400`。
+- `last_used_at` 每 5 分钟最多写一次库，避免每次工具调用都产生写事务。
+- 单用户活跃令牌上限 20 个，防止误点生成。
+
+接口（管理员）：
+
+| 方法与路径 | 说明 |
+|-----------|------|
+| `GET /api/tokens` | 列表 + 统计（total/active/revoked/expired） |
+| `POST /api/tokens` | 生成，body `{name, expires_in_days}`（0 或缺省 = 永久），**响应含明文** |
+| `DELETE /api/tokens/<id>` | 撤销 |
+| `GET /api/tokens/meta` | 连接信息（MCP 端点、活跃上限、是否配置了静态密钥） |
+
+MCP 端点地址优先读环境变量 `MCP_PUBLIC_URL`；未配置时按「当前访问主机名 + `MCP_PORT` + `MCP_PATH`」推断，反代或换域名后务必显式配置。
 
 ### 可用工具（30 个）
 
@@ -278,10 +313,10 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
   "type": "streamableHttp",
   "url": "http://127.0.0.1:8000/mcp",
   "headers": {
-    "Authorization": "Bearer <MCP_API_KEY>"
+    "Authorization": "Bearer <访问令牌>"
   },
   "timeout": 60000
 }
 ```
 
-修改 `mcp.json` 后需重启 WorkBuddy 会话使其生效。若更换了 `MCP_API_KEY`，须同步更新此处的 token。
+令牌从 Web 端「访问令牌」页面生成后粘进来。修改 `mcp.json` 后需重启 WorkBuddy 会话使其生效；之后换令牌只需在 Web 上撤销重发，不必再动这个文件。

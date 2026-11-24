@@ -8,9 +8,11 @@
 
 认证：
     客户端请求需携带 ``Authorization: Bearer <token>``。
-    token 支持两种：
-      1. 在 .env 配置的 MCP_API_KEY（静态密钥，推荐用于连接器）；
-      2. 用 SECRET_KEY 签发的、role=admin 的 JWT（与 Web 端同一套密钥）。
+    token 支持三种：
+      1. Web 端「访问令牌」页面发放的 ``pk_`` 令牌（推荐：可命名、可设有效期、
+         可随时撤销，撤销后下一次请求即失效，无需重启服务）；
+      2. 在 .env 配置的 MCP_API_KEY（静态密钥，全局共用，改一次要重启）；
+      3. 用 SECRET_KEY 签发的、role=admin 的 JWT（与 Web 端同一套密钥，短期有效）。
 
 环境变量（见 .env.example）：
     MCP_HOST / MCP_PORT    监听地址，默认 0.0.0.0:8000
@@ -43,6 +45,19 @@ from config import Config
 _MCP_API_KEY = os.getenv('MCP_API_KEY', '').strip()
 
 
+def _lookup_issued_token(token):
+    """查库校验 Web 端发放的令牌（pk_ 前缀）。
+
+    MCP 进程独立于 Flask 运行，但共用同一个 SQLite 库——Web 上点「撤销」后
+    下一次请求就会失败，不需要重启 MCP 服务。
+    """
+    from app import app as flask_app          # 延迟导入：避免循环依赖
+    from services import token_service
+
+    with flask_app.app_context():
+        return token_service.verify_value(token)
+
+
 class PartKeeperTokenVerifier(TokenVerifier):
     """校验连接器使用的 Bearer Token。"""
 
@@ -53,7 +68,20 @@ class PartKeeperTokenVerifier(TokenVerifier):
             if hmac.compare_digest(token, _MCP_API_KEY):
                 return AccessToken(token=token, client_id='workbuddy-connector', scopes=['mcp:admin'])
 
-        # 2) 复用 Web 端 JWT：仅放行 admin
+        # 2) Web 端发放的访问令牌（库里只有 SHA-256 摘要，校验时同样比对摘要）
+        try:
+            row = _lookup_issued_token(token)
+        except Exception as exc:          # 库被锁/未初始化不应表现为 500
+            print(f'[PartKeeper MCP] issued-token lookup failed: {exc}', file=sys.stderr)
+            row = None
+        if row is not None:
+            return AccessToken(
+                token=token,
+                client_id=f'pat-{row.id}',
+                scopes=[s for s in (row.scopes or 'mcp:admin').split(',') if s],
+            )
+
+        # 3) 复用 Web 端 JWT：仅放行 admin
         try:
             import jwt
             payload = jwt.decode(token, Config.SECRET_KEY, algorithms=['HS256'])
@@ -1508,5 +1536,5 @@ def stock_out(item_id: int, quantity: int, note: str = '') -> dict:
 if __name__ == '__main__':
     print(f'[PartKeeper MCP] Transport: Streamable HTTP', file=sys.stderr)
     print(f'[PartKeeper MCP] Endpoint : http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}', file=sys.stderr)
-    print(f'[PartKeeper MCP] Auth     : Bearer token (MCP_API_KEY or admin JWT)', file=sys.stderr)
+    print(f'[PartKeeper MCP] Auth     : Bearer token (Web-issued pk_ token / MCP_API_KEY / admin JWT)', file=sys.stderr)
     mcp.run(transport='streamable-http')
