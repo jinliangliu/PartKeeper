@@ -1,0 +1,9 @@
+{
+  "uuid": "8f3a1c2e-partkeeper-easyeda-001",
+  "name": "PartKeeper 库存匹配",
+  "version": "0.1.0",
+  "author": "PartKeeper",
+  "description": "读取当前原理图元件，与 PartKeeper 库存比对，标出缺失与缺口",
+  "entry": "main.js",
+  "homepage": "https://github.com/jinliangliu/PartKeeper"
+}

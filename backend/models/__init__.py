@@ -1,16 +1,25 @@
 import hashlib
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, date
+from pgvector.sqlalchemy import Vector
 
 db = SQLAlchemy()
+
+# 向量维度必须与 embedding 模型一致。BAAI/bge-small-zh-v1.5 输出 512 维；
+# 换模型时必须同步改这里、重建向量表与索引，否则新旧向量无法比较。
+EMBEDDING_DIM = 512
+EMBEDDING_MODEL = 'BAAI/bge-small-zh-v1.5'
+
 
 class User(db.Model):
     __tablename__ = 'users'
     
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
-    role = db.Column(db.Enum('admin', 'user'), default='user')
+    password_hash = db.Column(db.String(255), nullable=False)  # scrypt 输出约 162 字符，128 在 PG 下会被截断报错
+    # 用 String 而非 Enum：PG 的原生 ENUM 新增取值要 ALTER TYPE，角色/类型这类
+    # 小集合由路由层校验即可，保持与 SQLite 行为一致
+    role = db.Column(db.String(10), default='user')
     email = db.Column(db.String(100))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
@@ -227,7 +236,7 @@ class Transaction(db.Model):
     
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
-    type = db.Column(db.Enum('in', 'out'), nullable=False)
+    type = db.Column(db.String(10), nullable=False)   # in / out，路由层校验
     quantity = db.Column(db.Integer, nullable=False)
     unit_price = db.Column(db.Float)  # 入库时的单价（元），仅采购入库使用；出库为空
     order_id = db.Column(db.Integer)
@@ -242,7 +251,7 @@ class UtilityBill(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     category = db.Column(
-        db.Enum('water', 'electricity', 'gas', 'internet', 'phone', 'other'),
+        db.String(20),   # water/electricity/gas/internet/phone/other，见路由层校验
         nullable=False,
     )
     amount = db.Column(db.Float, nullable=False)                  # 缴费金额（元）
@@ -420,3 +429,32 @@ class BomItem(db.Model):
     quantity = db.Column(db.Integer, nullable=False, default=1)
 
     item = db.relationship('Item', backref='bom_items', lazy=True)
+
+
+class ItemEmbedding(db.Model):
+    """物品参数文本的向量表示，与 items 一对一。
+
+    为什么单独成表而不给 ItemSpec 加一列：向量的生命周期与业务字段不同——
+    换 embedding 模型要整体重建，重建时不该锁住物品表单的读写；而且不是所有
+    物品（家电、家具）都有可检索的参数，空向量只会浪费索引。
+
+    content_hash 是参与向量化文本的 SHA-256：文本没变就跳过重新编码，
+    避免每次保存物品都触发一次模型推理。
+    """
+    __tablename__ = 'item_embeddings'
+
+    item_id = db.Column(
+        db.Integer,
+        db.ForeignKey('items.id', ondelete='CASCADE'),
+        primary_key=True,
+    )
+    content_hash = db.Column(db.String(64), nullable=False)
+    embedding = db.Column(Vector(EMBEDDING_DIM), nullable=False)
+    model = db.Column(db.String(80), nullable=False, default=EMBEDDING_MODEL)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    item = db.relationship(
+        'Item',
+        backref=db.backref('embedding_row', uselist=False, cascade='all, delete-orphan'),
+        lazy='joined',
+    )

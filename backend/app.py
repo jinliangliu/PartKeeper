@@ -68,12 +68,71 @@ def create_app(config_object=Config):
     with app.app_context():
         # 顺序不可颠倒：结构重构必须在 create_all() 之前，
         # 否则会先建出空的 items 表，与 components 重命名冲突。
+        # vector 扩展必须先于建表，否则 item_embeddings 的 VECTOR 列无法创建。
         migrate()
-        db.create_all()
+        _ensure_vector_extension()
+        _create_tables()
+        _ensure_vector_index()
         seed_admin()
         seed_categories()
+        if app.config.get('EMBEDDING_SYNC_ON_STARTUP'):
+            from services import embedding_service
+            if embedding_service.is_available():
+                app.logger.info('向量索引补齐：%s', embedding_service.sync_all())
 
     return app
+
+
+def _create_tables():
+    """建表。
+
+    SQLite 没有 pgvector 的 ``vector`` 类型，建 item_embeddings 会直接报错。
+    该表只在 PostgreSQL 下创建，SQLite 环境下语义检索接口会明确返回不可用。
+    """
+    if db.engine.dialect.name == 'postgresql':
+        db.create_all()
+        return
+    tables = [t for t in db.metadata.sorted_tables if t.name != 'item_embeddings']
+    db.metadata.create_all(bind=db.engine, tables=tables)
+
+
+def _ensure_vector_extension():
+    """建表前确保 pgvector 扩展存在。
+
+    必须早于 create_all：item_embeddings 用了 VECTOR 类型，扩展没装会直接报
+    ``type "vector" does not exist``。CREATE EXTENSION 需要超级用户权限，
+    应用账号通常没有——部署时应在初始化脚本里以 DBA 身份装好；这里只做兜底。
+    """
+    if db.engine.dialect.name != 'postgresql':
+        return
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
+    except Exception as exc:  # 权限不足时不让服务起不来
+        current_app.logger.warning(
+            'pgvector 扩展不可用，语义检索将不可用（需 DBA 预先安装）：%s', exc
+        )
+
+
+def _ensure_vector_index():
+    """在建表后创建 HNSW 余弦索引。
+
+    小数据量下顺序扫描也够用，但索引能让 top-k 查询在几万条时保持稳定。
+    """
+    if db.engine.dialect.name != 'postgresql':
+        return
+    inspector = inspect(db.engine)
+    if 'item_embeddings' not in set(inspector.get_table_names()):
+        return
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text(
+                'CREATE INDEX IF NOT EXISTS ix_item_embeddings_hnsw '
+                'ON item_embeddings USING hnsw (embedding vector_cosine_ops)'
+            ))
+    except Exception as exc:  # 扩展版本过旧或权限不足
+        current_app.logger.warning('HNSW 索引创建失败：%s', exc)
+
 
 
 def migrate():
@@ -81,13 +140,17 @@ def migrate():
 
     create_all() 只会建缺失的表，不会给已有表加列，也不会重构表结构；
     这里用 ALTER TABLE 补齐。每一步都先检查现状，保证重复启动幂等。
+
+    只有 SQLite 旧库才需要 ``_migrate_components_to_items``（components 表
+    在新库和 PostgreSQL 里都不存在，函数内部会自行跳过）。
     """
     _migrate_components_to_items()
 
     inspector = inspect(db.engine)
     tables = set(inspector.get_table_names())
+    is_pg = db.engine.dialect.name == 'postgresql'
 
-    # 列定义：表名 -> [(列名, SQLite 列类型与默认值), ...]
+    # 列定义：表名 -> [(列名, 列类型与默认值), ...]
     additions = {
         'transactions': [
             ('unit_price', 'FLOAT'),
@@ -114,9 +177,18 @@ def migrate():
             continue
         existing = {c['name'] for c in inspector.get_columns(table)}
         for name, definition in columns:
-            if name not in existing:
+            if name in existing:
+                continue
+            if is_pg:
+                # PG 布尔列不接受 DEFAULT 0，且支持 ADD COLUMN IF NOT EXISTS
+                definition = definition.replace('BOOLEAN DEFAULT 0', 'BOOLEAN DEFAULT FALSE')
+                db.session.execute(text(
+                    f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {definition}'
+                ))
+            else:
                 db.session.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {definition}'))
-                db.session.commit()
+            db.session.commit()
+
 
 
 def _backup_database():
@@ -147,6 +219,10 @@ def _migrate_components_to_items():
     幂等条件：components 不存在（全新库或已迁移）时整段跳过。
     整段在一个事务内执行，任何一步失败都回滚，不会留下半迁移状态。
     """
+    # 只有 SQLite 旧库可能存在 components 表；PG 库由 create_all 直接建新结构
+    if db.engine.dialect.name != 'sqlite':
+        return
+
     tables = set(inspect(db.engine).get_table_names())
     if 'components' not in tables or 'items' in tables:
         return

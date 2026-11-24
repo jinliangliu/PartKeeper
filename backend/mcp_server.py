@@ -298,6 +298,40 @@ def list_components(keyword: str = '', category: str = '', only_low_stock: bool 
 
 
 @mcp.tool()
+def search_components_semantic(query: str, category: str = '', only_low_stock: bool = False,
+                               limit: int = 10) -> dict:
+    """按参数语义检索物料。用自然语言描述要找的东西，例如「十千欧的贴片电阻」
+    「一百微法的电解电容」「STM32 单片机」。记不清型号、只记得用途或参数范围时，
+    比 list_components 的关键词匹配更有效：同义表述（10kΩ / 十千欧）也能召回。"""
+    from services import embedding_service
+    if not embedding_service.is_available():
+        return {'error': '语义检索未启用：服务端需运行 PostgreSQL + pgvector，且 EMBEDDING_ENABLED=1'}
+    with _app().app_context():
+        category_ids = None
+        if category:
+            from models import Category
+            cat = Category.query.filter(Category.name.like(f'%{category}%')).first()
+            if cat is None:
+                return {'total': 0, 'items': [], 'note': f'未找到分类：{category}'}
+            category_ids = embedding_service.category_with_children(cat.id)
+        try:
+            rows = embedding_service.semantic_search(
+                query,
+                limit=max(1, min(limit, 50)),
+                category_ids=category_ids,
+                low_stock=only_low_stock,
+            )
+        except embedding_service.EmbeddingUnavailable as exc:
+            return {'error': str(exc)}
+        items = []
+        for item, score in rows:
+            d = _component_dict(item)
+            d['score'] = score
+            items.append(d)
+        return {'query': query, 'total': len(items), 'items': items}
+
+
+@mcp.tool()
 def get_component(item_id: int) -> dict:
     """按 ID 查询单个物料的完整详情。"""
     from models import Item

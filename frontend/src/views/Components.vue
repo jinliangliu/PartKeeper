@@ -3,12 +3,18 @@
     <div class="toolbar">
       <el-input
         v-model="query.keyword"
-        placeholder="搜索名称 / 值 / 封装 / 品牌"
+        :placeholder="semanticMode ? '描述要找的东西，如「十千欧的贴片电阻」' : '搜索名称 / 值 / 封装 / 品牌'"
         clearable
-        style="width: 260px"
+        style="width: 300px"
         @keyup.enter="load"
         @clear="load"
       />
+      <el-tooltip
+        content="按参数语义检索，支持「一百微法的电容」这类描述；需服务端启用 PostgreSQL + pgvector"
+        placement="top"
+      >
+        <el-switch v-model="semanticMode" active-text="语义" @change="onSemanticToggle" />
+      </el-tooltip>
       <el-select v-model="query.category_id" placeholder="分类" clearable style="width: 160px" @change="load">
         <el-option v-for="c in categoryOptions" :key="c.value" :label="c.label" :value="c.value" />
       </el-select>
@@ -46,6 +52,19 @@
     >
       <el-table-column v-if="authStore.isAdmin" type="selection" width="44" />
       <el-table-column prop="id" label="ID" width="60" />
+      <el-table-column v-if="semanticMode" label="相似度" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag
+            v-if="row.score != null"
+            size="small"
+            effect="plain"
+            :type="row.score >= 0.55 ? 'success' : 'info'"
+          >
+            {{ Math.round(row.score * 100) }}%
+          </el-tag>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="类型" width="112" align="center">
         <template #default="{ row }">
           <el-dropdown
@@ -114,6 +133,7 @@
 
     <div class="pager">
       <el-pagination
+        v-if="!semanticMode"
         v-model:current-page="query.page"
         v-model:page-size="query.per_page"
         :total="total"
@@ -122,6 +142,7 @@
         @current-change="load"
         @size-change="load"
       />
+      <span v-else class="muted">语义检索按相似度排序，最多返回 20 条</span>
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑物品' : '新增物品'" width="720px">
@@ -448,6 +469,8 @@ const saving = ref(false)
 const items = ref([])
 const total = ref(0)
 const query = reactive({ page: 1, per_page: 20, keyword: '', category_id: null })
+// 语义模式：走 /components/semantic-search，按向量相似度排序，不分页
+const semanticMode = ref(false)
 
 const dialogVisible = ref(false)
 const editingId = ref(null)
@@ -538,15 +561,43 @@ async function loadMeta() {
 async function load() {
   loading.value = true
   try {
+    if (semanticMode.value) {
+      if (!query.keyword) {
+        items.value = []
+        total.value = 0
+        return
+      }
+      const params = { q: query.keyword, limit: 20 }
+      if (query.category_id) params.category_id = query.category_id
+      const res = await http.get('/components/semantic-search', { params })
+      items.value = res.data.items
+      total.value = res.data.total
+      return
+    }
+
     const params = { page: query.page, per_page: query.per_page }
     if (query.keyword) params.keyword = query.keyword
     if (query.category_id) params.category_id = query.category_id
     const res = await http.get('/components', { params })
     items.value = res.data.items
     total.value = res.data.total
+  } catch (e) {
+    // 服务端没启用语义能力时自动退回关键词模式，别让用户卡在不可用的开关上
+    if (semanticMode.value && e?.response?.status === 503) {
+      semanticMode.value = false
+      await load()
+    }
   } finally {
     loading.value = false
   }
+}
+
+function onSemanticToggle(enabled) {
+  query.page = 1
+  if (enabled && !query.keyword) {
+    ElMessage.info('语义模式：输入一句描述，例如「一百微法的电解电容」')
+  }
+  load()
 }
 
 // --- 类型快速修改 ---

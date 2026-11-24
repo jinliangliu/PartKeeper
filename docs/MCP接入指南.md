@@ -53,11 +53,12 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 MCP 端点地址优先读环境变量 `MCP_PUBLIC_URL`；未配置时按「当前访问主机名 + `MCP_PORT` + `MCP_PATH`」推断，反代或换域名后务必显式配置。
 
-## 3. 可用工具（30 个）
+## 3. 可用工具（31 个）
 
 | 工具 | 说明 |
 |------|------|
 | `list_components` | 物品列表，支持关键词（名称/值/封装/品牌）/分类/低库存过滤，返回含 `kind` 类型 |
+| `search_components_semantic` | **参数语义检索**：用自然语言描述（「十千欧的贴片电阻」）按向量相似度召回，适合记不清具体写法时使用 |
 | `get_component` | 按 ID 查物品详情（含类型、消耗品/保修/维护属性） |
 | `create_component` | 新建物品档案，`kind` 支持 electronic/appliance/furniture/vehicle/other；分类/库位/供应商按名称自动关联；支持消耗品与保修维护字段 |
 | `list_low_stock` | 低库存预警清单 |

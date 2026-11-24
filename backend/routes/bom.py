@@ -32,4 +32,7 @@ def apply_bom():
         data = bom_service.create_missing_components(raw)
     except bom_service.BOMError as exc:
         return jsonify({'code': 400, 'message': str(exc), 'data': None}), 400
+    # 新建物品默认没有向量，补一次（失败不影响导入结果）
+    from routes.integrations import _sync_embeddings_quiet
+    _sync_embeddings_quiet()
     return jsonify({'code': 200, 'message': 'success', 'data': data})

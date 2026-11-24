@@ -6,6 +6,16 @@ python-dotenv==1.0.0
 # 凭证图片处理：格式校验 + EXIF/GPS 剥离 + 重编码（上传与 MCP 两条通道共用）
 Pillow==13.0.0
 
+# 数据库：PostgreSQL + pgvector（语义检索）
+# psycopg 3 是 SQLAlchemy 2.x 的推荐驱动，binary 版免编译
+psycopg[binary]>=3.1.0
+pgvector>=0.2.5
+
+# 本地文本向量化：fastembed（ONNX 推理，无需 torch）
+# 模型 BAAI/bge-small-zh-v1.5，输出 512 维；首次使用会下载约 100MB 权重
+# 注意：onnxruntime 在 Python 3.13 + Windows 下可能段错误，生产建议 3.12
+fastembed>=0.3.0
+
 # MCP 对外通信（Streamable HTTP）
 # 注意：pydantic 必须锁在 2.11.x —— 2.14 移除了 mcp 依赖的内部 API（eval_type_backport）
 mcp>=1.9.0

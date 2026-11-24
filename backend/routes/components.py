@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from models import db, Item, ItemSpec, Category, Expense, Maintenance, Supplier, Location, Transaction
 from utils.decorators import login_required, admin_required
 from datetime import datetime
@@ -230,7 +230,8 @@ def create_component():
     
     db.session.add(component)
     db.session.commit()
-    
+    _sync_embedding_quiet(component)
+
     return jsonify({
         'code': 200,
         'message': '创建成功',
@@ -296,7 +297,8 @@ def update_component(item_id):
         component.supplier_id = data['supplier_id']
     
     db.session.commit()
-    
+    _sync_embedding_quiet(component)
+
     return jsonify({
         'code': 200,
         'message': '更新成功',
@@ -325,10 +327,14 @@ def delete_component(item_id):
     Expense.query.filter_by(item_id=item_id).update(
         {'item_id': None}, synchronize_session=False
     )
+    # 删除前记下主键：删除 commit 之后对象处于 deleted 状态，不宜再读属性
+    item_id_for_cleanup = component.id
     db.session.expire(component)
     db.session.delete(component)
     db.session.commit()
-    
+    # ORM 级联通常已随物品删除向量行；这里兜底清理历史残留
+    _remove_embedding_quiet(item_id_for_cleanup)
+
     return jsonify({
         'code': 200,
         'message': '删除成功',
@@ -385,3 +391,135 @@ def batch_update_kind():
             'missing': sorted(set(ids) - {item.id for item in items}),
         },
     })
+
+# --- 语义检索 ---
+
+def _sync_embedding_quiet(item):
+    """同步向量，失败只告警。
+
+    向量是检索增强，不是业务数据：模型没下载好、PG 扩展缺失都不该让
+    物品的增删改失败。业务事务已经提交，这里失败留待重建索引时补齐。
+    """
+    from services import embedding_service
+    if not embedding_service.is_available():
+        return
+    try:
+        embedding_service.sync_item(item)
+    except embedding_service.EmbeddingUnavailable as exc:
+        current_app.logger.warning('向量同步失败（业务数据已保存）：%s', exc)
+
+
+def _remove_embedding_quiet(item_id):
+    """按 ID 清理向量。
+
+    不传 ORM 对象：物品删除并 commit 之后再读对象属性会踩到已删除状态，
+    这里只需要主键值。
+    """
+    from services import embedding_service
+    if not embedding_service.is_available():
+        return
+    try:
+        embedding_service.remove_item(item_id)
+    except embedding_service.EmbeddingUnavailable as exc:
+        current_app.logger.warning('向量清理失败：%s', exc)
+
+
+def _item_brief(item, score=None):
+    data = {
+        'id': item.id,
+        'kind': item.kind,
+        'name': item.name,
+        'value': item.value,
+        'package': item.package,
+        'tolerance': item.tolerance,
+        'brand': item.brand,
+        'current_stock': item.current_stock,
+        'min_stock': item.min_stock,
+        'unit': item.unit,
+        'category': item.category.name if item.category else None,
+        'location': item.location.name if item.location else None,
+        'supplier': item.supplier.name if item.supplier else None,
+        'created_at': item.created_at.isoformat(),
+        **_home_fields(item),
+    }
+    if score is not None:
+        data['score'] = score
+    return data
+
+
+@components_bp.route('/semantic-search', methods=['GET'])
+@login_required
+def semantic_search():
+    """参数语义检索。q 为自然语言描述，如「十千欧的贴片电阻」。"""
+    from services import embedding_service
+
+    if not embedding_service.is_available():
+        return jsonify({
+            'code': 503,
+            'message': '语义检索不可用：需要 PostgreSQL + pgvector，且未禁用 EMBEDDING_ENABLED',
+            'data': None,
+        }), 503
+
+    query = (request.args.get('q') or '').strip()
+    if not query:
+        return jsonify({'code': 400, 'message': '缺少查询词 q', 'data': None}), 400
+
+    category_id = request.args.get('category_id', type=int)
+    try:
+        rows = embedding_service.semantic_search(
+            query,
+            limit=request.args.get('limit', 10, type=int),
+            kind=request.args.get('kind') or None,
+            category_ids=embedding_service.category_with_children(category_id) if category_id else None,
+            low_stock=request.args.get('low_stock') in ('1', 'true', 'True'),
+        )
+    except embedding_service.EmbeddingUnavailable as exc:
+        return jsonify({'code': 503, 'message': str(exc), 'data': None}), 503
+
+    return jsonify({
+        'code': 200,
+        'message': 'success',
+        'data': {
+            'query': query,
+            'total': len(rows),
+            'items': [_item_brief(item, score) for item, score in rows],
+        },
+    })
+
+
+@components_bp.route('/semantic-status', methods=['GET'])
+@login_required
+def semantic_status():
+    """向量覆盖情况：页面据此提示是否该重建索引。"""
+    from services import embedding_service
+
+    available = embedding_service.is_available()
+    data = {
+        'available': available,
+        'model': current_app.config.get('EMBEDDING_MODEL'),
+    }
+    if available:
+        data.update(embedding_service.index_status())
+    return jsonify({'code': 200, 'message': 'success', 'data': data})
+
+
+@components_bp.route('/semantic-reindex', methods=['POST'])
+@admin_required
+def semantic_reindex():
+    """全量补齐/重建向量。body {"force": true} 忽略内容哈希全部重编码。"""
+    from services import embedding_service
+
+    if not embedding_service.is_available():
+        return jsonify({
+            'code': 503,
+            'message': '语义检索不可用：需要 PostgreSQL + pgvector',
+            'data': None,
+        }), 503
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        stats = embedding_service.sync_all(force=bool(payload.get('force')))
+    except embedding_service.EmbeddingUnavailable as exc:
+        return jsonify({'code': 503, 'message': str(exc), 'data': None}), 503
+
+    return jsonify({'code': 200, 'message': '重建完成', 'data': stats})

@@ -1,0 +1,21 @@
+{
+  "name": "PartKeeper 库存匹配",
+  "description": "读取当前 PCB 元件并与 PartKeeper 库存比对",
+  "description_full": "在 PCB 编辑器里一键读取当前板的元件（按值+封装聚合），提交给 PartKeeper 匹配库存，标出缺失与缺口，并可一键创建缺失物料。替代手工导出 BOM 再上传的流程。需要在 PartKeeper 的「访问令牌」页生成令牌后填入插件设置。",
+  "identifier": "com.github.jinliangliu.partkeeper",
+  "type": "plugin",
+  "author": {
+    "name": "PartKeeper"
+  },
+  "license": "MIT",
+  "resources": {
+    "homepage": "https://github.com/jinliangliu/PartKeeper"
+  },
+  "versions": [
+    {
+      "version": "0.1.0",
+      "status": "stable",
+      "kicad_version": "8.0"
+    }
+  ]
+}

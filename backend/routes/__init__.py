@@ -16,6 +16,7 @@ def register_blueprints(app):
     from routes.utility_bills import utility_bp
     from routes.maintenances import maintenances_bp
     from routes.api_tokens import tokens_bp
+    from routes.integrations import integrations_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(components_bp)
@@ -31,3 +32,4 @@ def register_blueprints(app):
     app.register_blueprint(utility_bp)
     app.register_blueprint(maintenances_bp)
     app.register_blueprint(tokens_bp)
+    app.register_blueprint(integrations_bp)
