@@ -28,6 +28,12 @@ http.interceptors.response.use(
   (error) => {
     const status = error.response?.status
     const message = error.response?.data?.message || error.message || '网络错误'
+    // 登录接口的 401 是「账号或密码错误」，不是会话过期。
+    // 不能清 token、不能跳转，更不能显示成「登录已过期」——那会让人以为只是刷新一下就好。
+    if (status === 401 && String(error.config?.url || '').includes('/auth/login')) {
+      ElMessage.error(message || '用户名或密码错误')
+      return Promise.reject(error)
+    }
     if (status === 401) {
       authStore.logout()
       ElMessage.error('登录已过期，请重新登录')

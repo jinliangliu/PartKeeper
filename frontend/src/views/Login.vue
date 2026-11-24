@@ -20,7 +20,7 @@
           登 录
         </el-button>
       </el-form>
-      <p class="hint">默认管理员：admin / admin123</p>
+      <p class="hint">账号由管理员分配；忘记密码请找维护人员重置</p>
     </el-card>
   </div>
 </template>
