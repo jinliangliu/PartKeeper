@@ -122,6 +122,20 @@ powershell -ExecutionPolicy Bypass -File .\start_mcp.ps1
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
+### 生产部署与端口分配
+
+同机还跑着 `personal-agent-platform`，端口不能串用。当前分配：
+
+| 端口 | 归属 | 说明 |
+|------|------|------|
+| 80 | pap | pap 的 default_server（Basic Auth 网关），**PartKeeper 不碰** |
+| 8080 | pap | 已划给 pap 使用，**PartKeeper 不得占用** |
+| 8090 | PartKeeper Web | nginx 站点，见 `deploy/nginx-partkeeper.conf` |
+| 8100 | PartKeeper 后端 | gunicorn，只听 127.0.0.1 |
+| 8200 | PartKeeper MCP | 只听 127.0.0.1，经 8090 的 `/mcp` 反代暴露 |
+
+改完 `backend/.env` 后**必须重启对应 systemd 单元**：`EnvironmentFile` 只在进程启动时注入，`MCP_PUBLIC_URL` 改了不重启 `partkeeper-web`，页面上的连接地址仍是旧值。
+
 ### 认证
 
 所有请求需在 Header 携带 `Authorization: Bearer <token>`，令牌支持三种来源，按顺序校验：
