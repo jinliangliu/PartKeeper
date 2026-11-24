@@ -6,46 +6,49 @@
 
 ```mermaid
 flowchart TB
-    subgraph clients["访问方"]
-        USER["浏览器 / 用户"]
+    subgraph clients["客户端层"]
+        BROWSER["浏览器"]
         AGENT["WorkBuddy / PAP<br/>智能体连接器"]
     end
 
     subgraph frontend["前端"]
-        SPA["Vue 3 SPA<br/>Element Plus"]
-        VITE["Vite Dev Server :5173<br/>仅开发期，代理 /api"]
+        SPA["Vue 3 SPA<br/>Element Plus · Axios"]
     end
 
-    subgraph ingress["接入层（生产）"]
-        NGINX["nginx :8090<br/>静态资源 + 反向代理"]
+    subgraph access["接入层"]
+        VITE["Vite :5173（开发）<br/>托管 SPA · 代理 /api"]
+        NGINX["nginx :8090（生产）<br/>托管 dist · 反代 /api 与 /mcp"]
     end
 
-    subgraph services["应用服务"]
+    subgraph services["应用服务层"]
         WEB["Flask Web API<br/>:5000 开发 / :8100 生产<br/>REST /api · JWT 鉴权"]
-        MCP["MCP Server<br/>:8000 开发 / :8200 生产<br/>Streamable HTTP · Bearer 令牌 · 30 工具"]
+        MCP["MCP Server<br/>:8000 开发 / :8200 生产<br/>Streamable HTTP · Bearer · 30 工具"]
     end
 
     subgraph data["数据层"]
-        DB[("SQLite app.db<br/>物品 / 流水 / 开支 / 令牌")]
-        FILES[("本地文件 uploads/<br/>凭证图片 · 哈希命名 · 剥离 EXIF")]
+        DB[("SQLite<br/>instance/app.db")]
+        FILES[("uploads/<br/>凭证图片")]
     end
 
-    USER --> VITE
+    BROWSER -->|"开发"| VITE
+    BROWSER ==>|"生产"| NGINX
     VITE --> SPA
-    SPA -->|"开发 /api"| WEB
-    USER -->|"生产 静态 + /api"| NGINX
+    VITE -->|"/api"| WEB
+    NGINX --> SPA
     NGINX -->|"/api"| WEB
     NGINX -->|"/mcp"| MCP
-    AGENT -->|"Bearer pk_... 令牌"| MCP
-    WEB --> DB
-    WEB --> FILES
-    MCP --> DB
-    MCP --> FILES
+    AGENT ==>|"Bearer pk_ 令牌"| MCP
+    WEB -->|"ORM"| DB
+    WEB -->|"读写"| FILES
+    MCP -->|"ORM"| DB
+    MCP -->|"读写"| FILES
 ```
 
-开发态：Vite `:5173` 承载前端并代理 `/api` 到 Flask `:5000`，MCP Server 单独启动在 `:8000`。
+细线为开发链路，粗线为生产链路。
 
-生产态：nginx `:8090` 托管 `frontend/dist`，`/api` 反代到 gunicorn `:8100`，`/mcp` 反代到 MCP Server `:8200`。Web 与 MCP 是两个独立进程，共享同一个 SQLite 数据库——因此 Web 上撤销令牌，MCP 下一次请求立即失效，无需重启服务。
+- **开发态**：Vite `:5173` 托管 SPA 并把 `/api` 代理到 Flask `:5000`；MCP Server 单独启动在 `:8000`。
+- **生产态**：nginx `:8090` 托管 `frontend/dist`，`/api` 反代到 gunicorn `:8100`，`/mcp` 反代到 MCP Server `:8200`。Web 与 MCP 是两个独立进程，共享同一个 SQLite 数据库——因此 Web 上撤销令牌，MCP 下一次请求立即失效，无需重启服务。
+- **数据层**：结构化数据落 SQLite 单文件；凭证图片落磁盘 `uploads/`，按内容 SHA-256 命名、剥离 EXIF，二进制不进库。
 
 ## 技术栈
 
